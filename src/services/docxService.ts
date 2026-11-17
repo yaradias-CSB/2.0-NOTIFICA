@@ -6,6 +6,11 @@ import { saveAs } from 'file-saver';
 import { ParecerData, OficioData, NotificacaoData } from '../types';
 import { SEMA_MT, CSB_SURH } from '../constants';
 import { CABECALHO_SEMA_BASE64 } from '../assets/novoCabecalhoBase64';
+import {
+  buildNotificacaoText,
+  buildOficioCorpoText,
+  buildParecerRevisaoText,
+} from './documentTemplates';
 
 const createHeader = () => {
   return [
@@ -49,96 +54,37 @@ const base64ToUint8Array = (base64String: string): Uint8Array => {
 };
 
 export const generateOficioDoc = async (data: OficioData) => {
+  const corpoTexto = buildOficioCorpoText(data);
   const doc = new Document({
     sections: [{
       properties: {},
       children: [
         ...createHeader(),
-        new Paragraph({
-          alignment: AlignmentType.RIGHT,
-          children: [
-            new TextRun({ text: `Cuiabá-MT, ${new Date(data.dataEmissao || Date.now()).toLocaleDateString('pt-BR', { day: 'numeric', month: 'long', year: 'numeric' })}.`, size: 22 }),
-          ],
-        }),
-        new Paragraph({ text: "", spacing: { after: 400 } }),
-        new Paragraph({
-          children: [
-            new TextRun({ text: `Ofício nº ${data.protocolo || '____'}/CSB/SURH/SEMA-MT`, bold: true, size: 24 }),
-          ],
-        }),
-        new Paragraph({ text: "", spacing: { after: 400 } }),
-        new Paragraph({
-          children: [
-            new TextRun({ text: "Ao Senhor(a):", bold: true, size: 22 }),
-          ],
-        }),
-        new Paragraph({
-          children: [
-            new TextRun({ text: data.interessado || '____________________', size: 22 }),
-          ],
-        }),
-        new Paragraph({ text: "", spacing: { after: 400 } }),
-        new Paragraph({
-          children: [
-            new TextRun({ text: "Assunto: ", bold: true, size: 22 }),
-            new TextRun({ text: data.assunto || '____________________', size: 22 }),
-          ],
-        }),
-        new Paragraph({ text: "", spacing: { after: 600 } }),
-        new Paragraph({
-          alignment: AlignmentType.BOTH,
-          children: [
-            new TextRun({ text: "Prezado(a) Senhor(a),", size: 22 }),
-          ],
-        }),
-        new Paragraph({ text: "", spacing: { after: 200 } }),
-        new Paragraph({
-          alignment: AlignmentType.BOTH,
-          children: [
-            new TextRun({ 
-              text: `Pelo presente, notificamos Vossa Senhoria acerca das pendências identificadas no processo em epígrafe, conforme detalhado abaixo:`, 
-              size: 22 
-            }),
-          ],
-        }),
-        new Paragraph({ text: "", spacing: { after: 400 } }),
-        ...(data.pendencias || []).map((p: any) => 
+        ...corpoTexto.split('\n').map((line) =>
           new Paragraph({
-            bullet: { level: 0 },
+            alignment: line.startsWith('OFÍCIO') ? AlignmentType.CENTER : AlignmentType.BOTH,
             children: [
-              new TextRun({ text: typeof p === 'string' ? p : p.descricao, size: 22 }),
+              new TextRun({
+                text: line,
+                bold: line.startsWith('OFÍCIO') || line.startsWith('Assunto:') || line.startsWith('Interessado'),
+                size: line.startsWith('OFÍCIO') ? 24 : 22,
+              }),
             ],
+            spacing: { after: line === '' ? 140 : 80 },
           })
         ),
-        new Paragraph({ text: "", spacing: { after: 800 } }),
-        new Paragraph({
-          alignment: AlignmentType.CENTER,
-          children: [
-            new TextRun({ text: "Atenciosamente,", size: 22 }),
-          ],
-        }),
-        new Paragraph({ text: "", spacing: { after: 1200 } }),
-        new Paragraph({
-          alignment: AlignmentType.CENTER,
-          children: [
-            new TextRun({ text: (data.analistas && data.analistas.length > 0) ? data.analistas.join(', ') : '____________________', bold: true, size: 22 }),
-          ],
-        }),
-        new Paragraph({
-          alignment: AlignmentType.CENTER,
-          children: [
-            new TextRun({ text: "Analista de Meio Ambiente", size: 20 }),
-          ],
-        }),
       ],
     }],
   });
 
   const blob = await Packer.toBlob(doc);
-  saveAs(blob, `Oficio_${data.protocolo?.replace(/\//g, '-') || 'Novo'}.docx`);
+  saveAs(blob, `Oficio_${(data.protocolo || 'Novo').replace(/[\/\\]/g, '-')}.docx`);
 };
 
 export const generateParecerDoc = async (data: ParecerData) => {
+  const numParecer = data.numParecerTecnico || data.processo || '____';
+  const tipoTitulo = (data.tipo_documento || 'PARECER TÉCNICO').toUpperCase();
+  const revisaoTexto = (data.revisaoParecer && data.revisaoParecer.trim()) || buildParecerRevisaoText(data);
   const doc = new Document({
     sections: [{
       properties: {},
@@ -147,17 +93,17 @@ export const generateParecerDoc = async (data: ParecerData) => {
         new Paragraph({
           alignment: AlignmentType.CENTER,
           children: [
-            new TextRun({ text: `PARECER TÉCNICO Nº ${data.processo || '____'}/CSB/SURH/SEMA-MT`, bold: true, size: 26 }),
+            new TextRun({ text: `${tipoTitulo} Nº ${numParecer}/CSB/SURH/SEMA-MT`, bold: true, size: 26 }),
           ],
         }),
         new Paragraph({ text: "", spacing: { after: 600 } }),
         new Paragraph({
           heading: HeadingLevel.HEADING_1,
-          children: [new TextRun({ text: "1. INTRODUÇÃO", bold: true, size: 24 })],
+          children: [new TextRun({ text: "1. INTRODUÇÃO E CORPO DO PARECER", bold: true, size: 24 })],
         }),
         new Paragraph({
           alignment: AlignmentType.BOTH,
-          children: (data.revisaoParecer || "Sem introdução.").split('\n').map((line, i) => new TextRun({
+          children: revisaoTexto.split('\n').map((line, i) => new TextRun({
             text: line,
             break: i > 0 ? 1 : undefined,
             size: 22
@@ -214,6 +160,7 @@ export const generateParecerDoc = async (data: ParecerData) => {
 };
 
 export const generateNotificacaoDoc = async (data: NotificacaoData) => {
+  const textoNotifFinal = (data.textoNotificacao && data.textoNotificacao.trim()) || buildNotificacaoText(data);
   const doc = new Document({
     sections: [{
       properties: {},
@@ -228,7 +175,7 @@ export const generateNotificacaoDoc = async (data: NotificacaoData) => {
         new Paragraph({ text: "", spacing: { after: 600 } }),
         new Paragraph({
           alignment: AlignmentType.BOTH,
-          children: (data.textoNotificacao || "Sem conteúdo.").split('\n').map((line, i) => new TextRun({
+          children: textoNotifFinal.split('\n').map((line, i) => new TextRun({
             text: line,
             break: i > 0 ? 1 : undefined,
             size: 22

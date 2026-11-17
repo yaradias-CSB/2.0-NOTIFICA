@@ -171,12 +171,12 @@ const Dashboard: React.FC<DashboardProps> = ({
       }
 
       // Type specific filters
-      if (item.tipo_documento === 'Parecer Técnico') {
+      if (item.tipo_documento?.startsWith('Parecer')) {
         const p = item as ParecerData;
         if (filters.municipios.length > 0 && !filters.municipios.includes(p.municipio)) return false;
         
-        const dpaClass = (p as any).classificacao?.dpaClass || '';
-        const risco = (p as any).classificacao?.risco || '';
+        const dpaClass = (p as any).classificacao?.dpaClass || p.classificacaoDPA || '';
+        const risco = (p as any).classificacao?.risco || p.classificacaoCRI || '';
 
         if (filters.dpa.length > 0 && !filters.dpa.includes(dpaClass)) return false;
         if (filters.cri.length > 0 && !filters.cri.includes(risco)) return false;
@@ -206,7 +206,7 @@ const Dashboard: React.FC<DashboardProps> = ({
   }, [documents, filters, searchTerm]);
 
   const filteredPareceres = useMemo(() => {
-    return filteredDocuments.filter(d => d.tipo_documento === 'Parecer Técnico') as ParecerData[];
+    return filteredDocuments.filter(d => d.tipo_documento?.startsWith('Parecer')) as ParecerData[];
   }, [filteredDocuments]);
 
   const filteredOficios = useMemo(() => {
@@ -295,7 +295,7 @@ const Dashboard: React.FC<DashboardProps> = ({
         };
       }
       analystMap[analista].total += 1;
-      if (i.tipo_documento === 'Parecer Técnico') {
+      if (i.tipo_documento?.startsWith('Parecer')) {
         if (i.status === 'Concluído') analystMap[analista].parecerConcluido += 1;
         else analystMap[analista].parecerRascunho += 1;
       } else {
@@ -344,15 +344,15 @@ const Dashboard: React.FC<DashboardProps> = ({
     });
     const productivitySource = selectedAnalyst ? filteredDocuments.filter(i => ((i as any).analistas?.[0] || (i as any).analista) === selectedAnalyst) : filteredDocuments;
     productivitySource.forEach(i => {
-      const dateStr = i.tipo_documento === 'Parecer Técnico' ? (i as ParecerData).data : 
-                     i.tipo_documento === 'Ofício de Pendências' ? (i as OficioData).dataEmissao : 
+      const dateStr = i.tipo_documento?.startsWith('Parecer') ? ((i as ParecerData).dataParecer || (i as ParecerData).data || i.created_at) : 
+                     i.tipo_documento?.includes('Of') ? (i as OficioData).dataEmissao : 
                      (i as any).dataNotificacao || i.created_at;
       const date = new Date(dateStr || 0);
       if (!isNaN(date.getTime())) {
         const monthName = MONTHS[date.getMonth()];
         if (monthlyMap[monthName]) {
           monthlyMap[monthName].total += 1;
-          if (i.tipo_documento === 'Parecer Técnico') {
+          if (i.tipo_documento?.startsWith('Parecer')) {
             if (i.status === 'Concluído') monthlyMap[monthName].parecerConcluido += 1;
             else monthlyMap[monthName].parecerRascunho += 1;
           } else if (i.tipo_documento === 'Ofício de Pendências' || i.tipo_documento === '1° Oficio de Pendencias' || i.tipo_documento === '2° Oficio de Pendencias' || i.tipo_documento === 'Oficio Geral') {
@@ -382,7 +382,7 @@ const Dashboard: React.FC<DashboardProps> = ({
     }));
 
     const docTypeData = [
-      { name: 'Parecer Técnico', value: filteredDocuments.filter(d => d.tipo_documento === 'Parecer Técnico').length, color: '#0000CD' },
+      { name: 'Parecer Técnico', value: filteredDocuments.filter(d => d.tipo_documento?.startsWith('Parecer')).length, color: '#0000CD' },
       { name: 'Ofício de Pendências', value: filteredDocuments.filter(d => d.tipo_documento === 'Ofício de Pendências' || d.tipo_documento === '1° Oficio de Pendencias' || d.tipo_documento === '2° Oficio de Pendencias' || d.tipo_documento === 'Oficio Geral').length, color: '#10b981' },
       { name: 'Notificação', value: filteredDocuments.filter(d => d.tipo_documento === 'Notificação').length, color: '#7B3FE4' },
     ].filter(d => d.value > 0);

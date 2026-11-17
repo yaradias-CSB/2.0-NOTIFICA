@@ -24,11 +24,11 @@ export const DocumentList = React.memo<DocumentListProps>(({ documents, handleEd
           <div key={item.id} className="p-4 space-y-3">
             <div className="flex justify-between items-start">
               <span className={`px-2 py-0.5 rounded text-[9px] font-black uppercase tracking-wider ${
-                item.tipo_documento === 'Parecer Técnico' ? 'bg-[#0000CD] text-white' : 
+                item.tipo_documento?.startsWith('Parecer') ? 'bg-[#0000CD] text-white' : 
                 (item.tipo_documento === 'Ofício de Pendências' || item.tipo_documento === '1° Oficio de Pendencias' || item.tipo_documento === '2° Oficio de Pendencias' || item.tipo_documento === 'Oficio Geral') ? 'bg-[#FBBF24] text-white' :
                 'bg-[#7B3FE4] text-white'
               }`}>
-                {item.tipo_documento === 'Parecer Técnico' ? 'Parecer' : 
+                {item.tipo_documento?.startsWith('Parecer') ? 'Parecer' : 
                  item.tipo_documento === 'Notificação' ? 'Notificação' : 'Ofício'}
               </span>
               <div className="flex gap-1">
@@ -96,11 +96,11 @@ export const DocumentList = React.memo<DocumentListProps>(({ documents, handleEd
               <tr key={item.id} className="hover:bg-slate-50/50 transition-colors group">
                 <td className="px-6 py-4">
                   <span className={`px-2 py-0.5 rounded text-[9px] font-black uppercase tracking-wider ${
-                    item.tipo_documento === 'Parecer Técnico' ? 'bg-[#0000CD] text-white' : 
+                    item.tipo_documento?.startsWith('Parecer') ? 'bg-[#0000CD] text-white' : 
                     (item.tipo_documento === 'Ofício de Pendências' || item.tipo_documento === '1° Oficio de Pendencias' || item.tipo_documento === '2° Oficio de Pendencias' || item.tipo_documento === 'Oficio Geral') ? 'bg-[#FBBF24] text-white' :
                     'bg-[#7B3FE4] text-white'
                   }`}>
-                    {item.tipo_documento === 'Parecer Técnico' ? 'Parecer' : 
+                    {item.tipo_documento?.startsWith('Parecer') ? 'Parecer' : 
                      item.tipo_documento === 'Notificação' ? 'Notificação' : 'Ofício'}
                   </span>
                 </td>

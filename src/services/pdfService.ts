@@ -2,6 +2,11 @@ import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import { ParecerData, OficioData, NotificacaoData } from '../types';
 import { SEMA_MT, CSB_SURH, APP_LOGO_URL } from '../constants';
+import {
+  buildNotificacaoText,
+  buildOficioCorpoText,
+  buildParecerRevisaoText,
+} from './documentTemplates';
 
 // Helper to format date in Brazilian Portuguese
 const formatExtensoDate = (dateStr?: string): string => {
@@ -253,8 +258,9 @@ export const generateParecerPDF = async (data: ParecerData) => {
 
   // Section 2: Introdução
   printSectionHeader('2. INTRODUÇÃO E HISTÓRICO');
-  const introText = data.revisaoParecer || data.introducaoParticularidade || 
-    `O presente parecer técnico tem por finalidade analisar a documentação de segurança de barragem apresentada pelo empreendedor ${data.identificacaoEmpreendedor || 'não informado'}, referente à barragem ${data.nomeBarragem || 'identificada nos autos'}, no município de ${data.municipio || '---'} / MT, protocolada sob o Processo Administrativo nº ${data.processo || '---'}.`;
+  const introText = (data.revisaoParecer && data.revisaoParecer.trim()) ||
+    data.introducaoParticularidade ||
+    buildParecerRevisaoText(data);
   printParagraphs(introText);
 
   // Section 3: Peças Técnicas
@@ -439,7 +445,7 @@ export const generateOficioPDF = async (data: OficioData & { totalDias?: number;
   doc.text('Processo:', 19, currentY + 11.5);
   doc.setFont('helvetica', 'normal');
   doc.setTextColor(15, 23, 42);
-  doc.text(data.protocolo || (data as any).numeroProcesso || '---', 35, currentY + 11.5);
+  doc.text(data.processo || data.protocolo || (data as any).numeroProcesso || '---', 35, currentY + 11.5);
 
   if (data.empreendimento) {
     doc.setFont('helvetica', 'bold');
@@ -464,8 +470,12 @@ export const generateOficioPDF = async (data: OficioData & { totalDias?: number;
   doc.setFont('helvetica', 'normal');
   doc.setFontSize(9);
   doc.setTextColor(51, 65, 85);
-  const textoIntro = 
-    `Cumprimentando-o(a) cordialmente, informamos que após análise técnica do processo administrativo em referência, relativo à segurança da barragem do empreendimento supracitado, constatou-se a necessidade de saneamento e complementação das seguintes pendências técnicas:`;
+  const textoIntro = data.tipo_documento === '2° Oficio de Pendencias'
+    ? 'Em continuidade à análise do processo administrativo em referência (2ª reiteração de diligência), solicitamos o saneamento definitivo das seguintes pendências técnicas:'
+    : data.tipo_documento === 'Oficio Geral'
+      ? 'Cumprimentando-o(a) cordialmente, encaminhamos os esclarecimentos e determinações técnicas relativas ao empreendimento supracitado:'
+      : buildOficioCorpoText(data).split('\n').find((l) => l.startsWith('Cumprimentando-o(a)')) ||
+        'Cumprimentando-o(a) cordialmente, informamos que após análise técnica do processo administrativo em referência, relativo à segurança da barragem do empreendimento supracitado, constatou-se a necessidade de saneamento e complementação das seguintes pendências técnicas:';
   const introLines = doc.splitTextToSize(textoIntro, pageWidth - 32);
   doc.text(introLines, 16, currentY);
 
@@ -645,7 +655,8 @@ export const generateNotificacaoPDF = async (data: NotificacaoData) => {
   doc.setFont('helvetica', 'normal');
   doc.setFontSize(8.5);
   doc.setTextColor(51, 65, 85);
-  const textoLines = doc.splitTextToSize(data.textoNotificacao || 'Sem conteúdo.', pageWidth - 32);
+  const textoNotifFinal = (data.textoNotificacao && data.textoNotificacao.trim()) || buildNotificacaoText(data);
+  const textoLines = doc.splitTextToSize(textoNotifFinal, pageWidth - 32);
   
   for (const line of textoLines) {
     if (currentY > doc.internal.pageSize.getHeight() - 30) {

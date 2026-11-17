@@ -451,11 +451,13 @@ const ParecerList: React.FC<ParecerListProps> = ({ onEditParecer, onViewParecer 
       const itemMunicipio = (item as any).municipio || (item as any).municipioEmpreendimento || (item as any).cidadeUf || "";
       if (filters.municipios.length > 0 && !filters.municipios.includes(itemMunicipio)) return false;
       
-      if (item.tipo_documento === 'Parecer Técnico') {
+      if (item.tipo_documento?.startsWith('Parecer')) {
         const p = item as ParecerData;
         const classificacao = (p as any).classificacao;
-        if (filters.dpa.length > 0 && !filters.dpa.includes(classificacao?.dpaClass || "")) return false;
-        if (filters.cri.length > 0 && !filters.cri.includes(classificacao?.risco || "")) return false;
+        const dpa = classificacao?.dpaClass || p.classificacaoDPA || "";
+        const cri = classificacao?.risco || p.classificacaoCRI || "";
+        if (filters.dpa.length > 0 && !filters.dpa.includes(dpa)) return false;
+        if (filters.cri.length > 0 && !filters.cri.includes(cri)) return false;
       }
 
       if (filters.analistas.length > 0) {

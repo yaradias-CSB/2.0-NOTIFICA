@@ -1,10 +1,11 @@
 import React, { useState, useEffect, useContext, useMemo } from 'react';
 import { 
-  Save, Download, ArrowLeft, FileText, Plus, Trash2, X, CheckCircle, Loader2, 
+  Save, Download, ArrowLeft, FileText, Plus, PlusCircle, Trash2, X, CheckCircle, CheckCircle2, Loader2, 
   Database, Info, ChevronRight, ChevronLeft, MapPin, ClipboardList, Shield, AlertTriangle,
-  ChevronDown, ChevronUp, Check, Search, User, ShieldCheck, Users
+  ChevronDown, ChevronUp, Check, Search, User, ShieldCheck, Users, RefreshCw
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
+import { toast } from 'sonner';
 import { 
   OPS_MUNICIPIOS, OPS_ANALISTA, OPS_RESPONSAVEL_TECNICO, OPS_DPA1_VOLUME,
   OPS_USO_PREPONDERANTE, OPS_SITUACAO_EMPREENDIMENTO, OPS_TIPO_BARRAGEM,
@@ -15,6 +16,7 @@ import { EcosystemContext } from '../contexts/EcosystemContext';
 import { logActivity } from '../lib/audit';
 import { generateParecerDoc } from '../services/docxService';
 import { generateParecerPDF } from '../services/pdfService';
+import { buildParecerRevisaoText } from '../services/documentTemplates';
 import { 
   ParecerData, RiscoEnum, DanoEnum, ClassificacaoData, DocItem, ResponsavelTecnico, 
   BarramentoData, EstruturaHidraulica, CoordenadaGMS, CoordenadasGMS 
@@ -28,7 +30,6 @@ import {
 import { AdministraEntityPicker } from './ecosystem/AdministraEntityPicker';
 import { CarCoordinateLookup } from './ecosystem/CarCoordinateLookup';
 import { matchMunicipioMT } from '../services/carLookupService';
-
 import { sanitizeObject } from '../lib/security';
 
 interface OpinionFormProps {
@@ -252,8 +253,20 @@ const CHECKLISTS: { [key: string]: string[] } = {
 
   const OpinionForm: React.FC<OpinionFormProps> = ({ onBack, onNavigate, initialData, readOnly }) => {
   const { refreshData, saveParecer } = useContext(DataContext);
-  const { syncEntitiesFromForm } = useContext(EcosystemContext);
+  const {
+    empreendedores: administraEmps,
+    barragens: administraBars,
+    responsaveisTecnicos: administraRTs,
+    saveEmpreendedor,
+    saveBarragem,
+    saveResponsavelTecnico,
+    linkArtToRT,
+    syncEntitiesFromForm,
+    refreshEcosystem,
+  } = useContext(EcosystemContext);
   const [loading, setLoading] = useState(false);
+  const [savingToAdministra, setSavingToAdministra] = useState(false);
+  const [registeringEntity, setRegisteringEntity] = useState<'empreendedor' | 'barragem' | 'rt' | null>(null);
 
   const [activeStep, setActiveStep] = useState(1);
   const [formData, setFormData] = useState<ParecerData>(() => {
@@ -277,24 +290,9 @@ const CHECKLISTS: { [key: string]: string[] } = {
     setExpandedSections(prev => ({ ...prev, [section]: !prev[section] }));
   };
 
-  useEffect(() => {
-    if (activeStep === 6 && !formData.revisaoParecer) {
-      const rts = [...(formData.responsaveisTecnicos || []), ...(formData.rtOutros || []).filter(n => n.trim() !== '')].join(', ');
-      const template = `PARECER TÉCNICO Nº ${formData.processo || '___'}/SEMA-MT\n\n` +
-        `1. INFORMAÇÕES GERAIS\n` +
-        `Empreendedor: ${formData.identificacaoEmpreendedor || '___'}\n` +
-        `CPF/CNPJ: ${formData.cpfCnpj || '___'}\n` +
-        `Localização: ${formData.localizacaoEmpreendimento || '___'}\n` +
-        `Município: ${formData.municipio || '___'}\n` +
-        `Responsável Técnico: ${rts || '___'}\n` +
-        `ART CREA/MT: ${formData.artCreaMt || '___'}\n\n` +
-        `4. ANÁLISE TÉCNICA\n` +
-        `${formData.analiseTecnica || '___'}\n\n` +
-        `5. CONCLUSÃO\n` +
-        `${formData.conclusao || '___'}`;
-      setFormData(prev => ({ ...prev, revisaoParecer: template }));
-    }
-  }, [activeStep, formData.processo, formData.identificacaoEmpreendedor, formData.cpfCnpj, formData.localizacaoEmpreendimento, formData.municipio, formData.analiseTecnica, formData.conclusao, formData.revisaoParecer, formData.responsaveisTecnicos, formData.rtOutros, formData.artCreaMt]);
+  const dynamicParecerText = useMemo(() => {
+    return buildParecerRevisaoText(formData);
+  }, [formData]);
 
   const handleGMSInputChange = (type: 'lat' | 'long', value: string) => {
     const digits = value.replace(/\D/g, '').substring(0, 8);
@@ -384,11 +382,21 @@ const CHECKLISTS: { [key: string]: string[] } = {
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
+  const allRTOptions = useMemo(() => {
+    const merged = [...OPS_RESPONSAVEL_TECNICO];
+    administraRTs.forEach((rt) => {
+      if (rt.nome && !merged.includes(rt.nome)) {
+        merged.push(rt.nome);
+      }
+    });
+    return merged;
+  }, [administraRTs]);
+
   const filteredRTs = useMemo(() => {
-    return OPS_RESPONSAVEL_TECNICO.filter(name => 
+    return allRTOptions.filter(name => 
       name.toLowerCase().includes(rtSearch.toLowerCase())
     );
-  }, [rtSearch]);
+  }, [allRTOptions, rtSearch]);
 
   const filteredAnalistas = useMemo(() => {
     return OPS_ANALISTA.filter(name => 
@@ -432,65 +440,419 @@ const CHECKLISTS: { [key: string]: string[] } = {
     setFormData(prev => ({ ...prev, [field]: value }));
   };
 
-  const handleSave = async (status: 'Rascunho' | 'Concluído' | 'Ofício de Pendências') => {
-    // Basic Validation
-    if (!formData.identificacaoEmpreendedor || !formData.cpfCnpj || !formData.processo || !formData.municipio) {
-      alert('Por favor, preencha os campos obrigatórios (Empreendedor, CPF/CNPJ, Processo e Município).');
+  const syncParecerEntitiesToAdministra = async (source: ParecerData) => {
+    const sanitized = sanitizeObject(source);
+    const rtNames = [
+      ...(sanitized.responsaveisTecnicos || []),
+      ...(sanitized.rtOutros || []).filter((n) => n.trim() !== ''),
+    ];
+    const rtList = rtNames.map((nome, idx) => ({
+      nome,
+      registroProfissional:
+        (idx === 0 ? sanitized.registroProfissionalRT : '') || sanitized.artCreaMt || undefined,
+      art: idx === 0 ? sanitized.artCreaMt || undefined : undefined,
+      formacaoProfissional: idx === 0 ? sanitized.formacaoProfissionalRT || undefined : undefined,
+      cpf: idx === 0 ? sanitized.cpfRT || undefined : undefined,
+    }));
+
+    return syncEntitiesFromForm({
+      existingEmpreendedorId: sanitized.empreendedorId,
+      existingBarragemId: sanitized.barragemId,
+      empreendedorNome: sanitized.identificacaoEmpreendedor,
+      cpfCnpj: sanitized.cpfCnpj,
+      logradouro: sanitized.logradouro,
+      numero: sanitized.numero,
+      complemento: sanitized.complemento,
+      bairro: sanitized.bairro,
+      municipio: sanitized.municipio,
+      cep: sanitized.cep,
+      carMt: sanitized.numCarMt,
+      nomeBarragem: sanitized.nomeBarragem || sanitized.localizacaoEmpreendimento,
+      codigoSnisb: sanitized.snisb,
+      processo: sanitized.processo,
+      cursoAguaBarrado: sanitized.nomeCursoAguaBarrado,
+      usoPreponderante:
+        sanitized.usoPreponderante === 'Outro'
+          ? sanitized.usoPreponderanteOutro || 'Outro'
+          : sanitized.usoPreponderante,
+      situacaoEmpreendimento:
+        sanitized.situacaoEmpreendimento === 'Outro'
+          ? sanitized.situacaoEmpreendimentoOutro || 'Outro'
+          : sanitized.situacaoEmpreendimento,
+      tipoBarragem:
+        sanitized.tipoBarragem === 'OUTRO'
+          ? sanitized.tipoBarragemOutro || 'OUTRO'
+          : sanitized.tipoBarragem,
+      coordenadasGMS: sanitized.coordenadasGMS,
+      altura: sanitized.alturaBarragem,
+      volume: sanitized.volumeBarragem,
+      larguraCoroamento: sanitized.larguraCoroamento,
+      comprimentoCoroamento: sanitized.comprimentoCoroamento,
+      classificacaoBarragem: sanitized.classificacaoBarragem,
+      classificacaoDPA: sanitized.classificacaoDPA,
+      classificacaoCRI: sanitized.classificacaoCRI,
+      portariaClassificacao: sanitized.portariaClassificacao,
+      parecerClassificacao: sanitized.parecerClassificacao,
+      responsaveisTecnicos: rtList,
+      analista: sanitized.analistas?.[0] || sanitized.analistasOutros?.[0] || 'Sistema Local',
+    });
+  };
+
+  const handleSaveOnlyToAdministra = async () => {
+    const hasRt =
+      (formData.responsaveisTecnicos && formData.responsaveisTecnicos.length > 0) ||
+      (formData.rtOutros && formData.rtOutros.some((n) => n.trim() !== ''));
+
+    if (
+      !formData.identificacaoEmpreendedor?.trim() &&
+      !formData.nomeBarragem?.trim() &&
+      !formData.localizacaoEmpreendimento?.trim() &&
+      !hasRt
+    ) {
+      toast.error('Informe ao menos Empreendedor, Barragem ou Responsável Técnico para salvar no Administra.');
       return;
+    }
+
+    setSavingToAdministra(true);
+    try {
+      const syncRes = await syncParecerEntitiesToAdministra(formData);
+      setFormData((prev) => ({
+        ...prev,
+        empreendedorId: syncRes.empreendedorId || prev.empreendedorId,
+        barragemId: syncRes.barragemId || prev.barragemId,
+        responsavelTecnicoIds:
+          syncRes.responsavelTecnicoIds.length > 0
+            ? syncRes.responsavelTecnicoIds
+            : prev.responsavelTecnicoIds,
+      }));
+      await refreshEcosystem();
+      toast.success('Dados de Empreendedor, Barragem e Responsável Técnico salvos/atualizados no Administra!');
+    } catch (error: any) {
+      toast.error(`Erro ao salvar no Administra: ${error?.message || 'falha inesperada'}`);
+    } finally {
+      setSavingToAdministra(false);
+    }
+  };
+
+  const normalizeLookupKey = (value?: string) =>
+    (value || '')
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .toLowerCase()
+      .trim();
+
+  const usedRtNames = useMemo(
+    () =>
+      Array.from(
+        new Set([
+          ...(formData.responsaveisTecnicos || []),
+          ...(formData.rtOutros || []).map((n) => n.trim()).filter(Boolean),
+        ])
+      ),
+    [formData.responsaveisTecnicos, formData.rtOutros]
+  );
+
+  const unregisteredRtNames = useMemo(
+    () =>
+      usedRtNames.filter(
+        (name) => !administraRTs.some((rt) => normalizeLookupKey(rt.nome) === normalizeLookupKey(name))
+      ),
+    [usedRtNames, administraRTs]
+  );
+
+  const hasEmpreendedorManual = Boolean(
+    formData.identificacaoEmpreendedor?.trim() || formData.cpfCnpj?.trim()
+  );
+  const hasBarragemManual = Boolean(
+    formData.nomeBarragem?.trim() ||
+      formData.localizacaoEmpreendimento?.trim() ||
+      formData.snisb?.trim() ||
+      formData.coordenadasGMS?.lat?.g ||
+      formData.coordenadasGMS?.long?.g
+  );
+
+  const handleRegisterEmpreendedor = async () => {
+    const sanitized = sanitizeObject(formData);
+    const nome = sanitized.identificacaoEmpreendedor?.trim();
+    if (!nome) {
+      toast.error('Informe o nome/identificação do Empreendedor antes de cadastrar na base de dados.');
+      return;
+    }
+
+    setRegisteringEntity('empreendedor');
+    try {
+      const digits = (sanitized.cpfCnpj || '').replace(/\D/g, '');
+      const carNorm = normalizeLookupKey(sanitized.numCarMt).replace(/[^a-z0-9]/g, '');
+      const nomeNorm = normalizeLookupKey(nome);
+
+      const matched =
+        (sanitized.empreendedorId
+          ? administraEmps.find((e) => e.id === sanitized.empreendedorId)
+          : undefined) ||
+        (digits ? administraEmps.find((e) => (e.cpfCnpjNormalizado || '') === digits) : undefined) ||
+        (carNorm
+          ? administraEmps.find(
+              (e) => normalizeLookupKey(e.carMt).replace(/[^a-z0-9]/g, '') === carNorm
+            )
+          : undefined) ||
+        (!digits ? administraEmps.find((e) => normalizeLookupKey(e.nome) === nomeNorm) : undefined);
+
+      const cidadeParts = (sanitized.cidadeUf || '').split('/');
+      const municipioRes = cidadeParts[0]?.trim() || sanitized.municipio || matched?.municipio;
+      const ufRes = cidadeParts[1]?.trim() || matched?.uf || 'MT';
+
+      const res = await saveEmpreendedor(
+        {
+          ...(matched ? { id: matched.id } : {}),
+          nome,
+          tipoPessoa:
+            matched?.tipoPessoa || (digits.length === 14 ? 'CNPJ' : 'CPF'),
+          cpfCnpj: sanitized.cpfCnpj?.trim() || matched?.cpfCnpj || '',
+          telefone: matched?.telefone,
+          email: matched?.email,
+          logradouro: sanitized.logradouro?.trim() || matched?.logradouro,
+          numero: sanitized.numero?.trim() || matched?.numero,
+          complemento: sanitized.complemento?.trim() || matched?.complemento,
+          bairro: sanitized.bairro?.trim() || matched?.bairro,
+          municipio: municipioRes,
+          uf: ufRes,
+          cep: sanitized.cep?.trim() || matched?.cep,
+          carMt: sanitized.numCarMt?.trim() || matched?.carMt,
+          situacao: matched?.situacao || 'ativo',
+          sourceSystem: matched?.sourceSystem || CURRENT_SYSTEM_ID,
+          createdByAnalyst:
+            matched?.createdByAnalyst ||
+            sanitized.analistas?.[0] ||
+            sanitized.analistasOutros?.[0] ||
+            'Sistema Local',
+        },
+        matched ? { allowEditFromForm: true } : undefined
+      );
+
+      if (!res.success || !res.data) {
+        throw new Error(res.message || 'Erro ao cadastrar empreendedor na base de dados.');
+      }
+
+      setFormData((prev) => ({ ...prev, empreendedorId: res.data!.id }));
+      await refreshEcosystem();
+      toast.success(`Empreendedor "${res.data.nome}" cadastrado e vinculado na base Administra!`);
+    } catch (error: any) {
+      toast.error(error?.message || 'Erro ao cadastrar empreendedor no Administra.');
+    } finally {
+      setRegisteringEntity(null);
+    }
+  };
+
+  const handleRegisterBarragem = async () => {
+    const sanitized = sanitizeObject(formData);
+    const nomeBarragem =
+      sanitized.nomeBarragem?.trim() || sanitized.localizacaoEmpreendimento?.trim();
+    if (!nomeBarragem) {
+      toast.error('Informe o Nome da Barragem / Empreendimento antes de cadastrar na base de dados.');
+      return;
+    }
+
+    setRegisteringEntity('barragem');
+    try {
+      const snisbNorm = normalizeLookupKey(sanitized.snisb);
+      const nameNorm = normalizeLookupKey(nomeBarragem);
+      const matched =
+        (sanitized.barragemId
+          ? administraBars.find((b) => b.id === sanitized.barragemId)
+          : undefined) ||
+        (snisbNorm
+          ? administraBars.find((b) => normalizeLookupKey(b.codigoSnisb) === snisbNorm)
+          : undefined) ||
+        administraBars.find(
+          (b) =>
+            normalizeLookupKey(b.nomeBarragem) === nameNorm &&
+            (!sanitized.empreendedorId || !b.empreendedorId || b.empreendedorId === sanitized.empreendedorId)
+        );
+
+      const res = await saveBarragem(
+        {
+          ...(matched ? { id: matched.id } : {}),
+          empreendedorId: sanitized.empreendedorId || matched?.empreendedorId,
+          empreendedorNome:
+            sanitized.identificacaoEmpreendedor?.trim() || matched?.empreendedorNome,
+          empreendedorCpfCnpj: sanitized.cpfCnpj?.trim() || matched?.empreendedorCpfCnpj,
+          nomeBarragem,
+          codigoSnisb: sanitized.snisb?.trim() || matched?.codigoSnisb,
+          processo: sanitized.processo?.trim() || matched?.processo,
+          municipio: sanitized.municipio || matched?.municipio,
+          uf: 'MT',
+          cursoAguaBarrado: sanitized.nomeCursoAguaBarrado?.trim() || matched?.cursoAguaBarrado,
+          usoPreponderante:
+            sanitized.usoPreponderante === 'Outro'
+              ? sanitized.usoPreponderanteOutro || 'Outro'
+              : sanitized.usoPreponderante || matched?.usoPreponderante,
+          situacaoEmpreendimento:
+            sanitized.situacaoEmpreendimento === 'Outro'
+              ? sanitized.situacaoEmpreendimentoOutro || 'Outro'
+              : sanitized.situacaoEmpreendimento || matched?.situacaoEmpreendimento,
+          tipoBarragem:
+            sanitized.tipoBarragem === 'OUTRO'
+              ? sanitized.tipoBarragemOutro || 'OUTRO'
+              : sanitized.tipoBarragem || matched?.tipoBarragem,
+          coordenadasGMS: sanitized.coordenadasGMS || matched?.coordenadasGMS,
+          altura: sanitized.alturaBarragem || matched?.altura,
+          volume: sanitized.volumeBarragem || matched?.volume,
+          larguraCoroamento: sanitized.larguraCoroamento || matched?.larguraCoroamento,
+          comprimentoCoroamento: sanitized.comprimentoCoroamento || matched?.comprimentoCoroamento,
+          classificacaoBarragem: sanitized.classificacaoBarragem || matched?.classificacaoBarragem,
+          classificacaoDPA: sanitized.classificacaoDPA || matched?.classificacaoDPA,
+          classificacaoCRI: sanitized.classificacaoCRI || matched?.classificacaoCRI,
+          portariaClassificacao: sanitized.portariaClassificacao || matched?.portariaClassificacao,
+          parecerClassificacao: sanitized.parecerClassificacao || matched?.parecerClassificacao,
+          sourceSystem: matched?.sourceSystem || CURRENT_SYSTEM_ID,
+          createdByAnalyst:
+            matched?.createdByAnalyst ||
+            sanitized.analistas?.[0] ||
+            sanitized.analistasOutros?.[0] ||
+            'Sistema Local',
+        },
+        matched ? { allowEditFromForm: true } : undefined
+      );
+
+      if (!res.success || !res.data) {
+        throw new Error(res.message || 'Erro ao cadastrar barragem na base de dados.');
+      }
+
+      setFormData((prev) => ({ ...prev, barragemId: res.data!.id }));
+      await refreshEcosystem();
+      toast.success(`Barragem "${res.data.nomeBarragem}" cadastrada e vinculada na base Administra!`);
+    } catch (error: any) {
+      toast.error(error?.message || 'Erro ao cadastrar barragem no Administra.');
+    } finally {
+      setRegisteringEntity(null);
+    }
+  };
+
+  const handleRegisterRTs = async () => {
+    const sanitized = sanitizeObject(formData);
+    if (usedRtNames.length === 0) {
+      toast.error('Selecione ou informe ao menos um Responsável Técnico para cadastrar.');
+      return;
+    }
+
+    setRegisteringEntity('rt');
+    try {
+      const nextIds = new Set<string>(sanitized.responsavelTecnicoIds || []);
+      let createdCount = 0;
+
+      for (let idx = 0; idx < usedRtNames.length; idx++) {
+        const nome = usedRtNames[idx];
+        const existing = administraRTs.find(
+          (r) => normalizeLookupKey(r.nome) === normalizeLookupKey(nome)
+        );
+        if (existing) {
+          nextIds.add(existing.id);
+          continue;
+        }
+
+        const artValue = idx === 0 ? sanitized.artCreaMt?.trim() : undefined;
+        const regValue =
+          (idx === 0 ? sanitized.registroProfissionalRT?.trim() : '') || artValue;
+        const cpfValue = idx === 0 ? sanitized.cpfRT?.trim() : undefined;
+        const formacaoValue = idx === 0 ? sanitized.formacaoProfissionalRT?.trim() : undefined;
+
+        if (artValue) {
+          const linkRes = await linkArtToRT({
+            rtNome: nome,
+            registroProfissional: regValue,
+            formacaoProfissional: formacaoValue,
+            cpf: cpfValue,
+            art: artValue,
+            barragemId: sanitized.barragemId || undefined,
+            barragemNome:
+              sanitized.nomeBarragem?.trim() ||
+              sanitized.localizacaoEmpreendimento?.trim() ||
+              undefined,
+            empreendedorId: sanitized.empreendedorId || undefined,
+            empreendedorNome: sanitized.identificacaoEmpreendedor?.trim() || undefined,
+            processo: sanitized.processo?.trim() || undefined,
+          });
+          if (!linkRes.success || !linkRes.data) {
+            throw new Error(linkRes.message || `Erro ao cadastrar RT ${nome}.`);
+          }
+          nextIds.add(linkRes.data.id);
+        } else {
+          const rtRes = await saveResponsavelTecnico({
+            nome,
+            registroProfissional: regValue,
+            formacaoProfissional: formacaoValue,
+            cpf: cpfValue,
+            sourceSystem: CURRENT_SYSTEM_ID,
+            createdByAnalyst:
+              sanitized.analistas?.[0] || sanitized.analistasOutros?.[0] || 'Sistema Local',
+          });
+          if (!rtRes.success || !rtRes.data) {
+            throw new Error(rtRes.message || `Erro ao cadastrar RT ${nome}.`);
+          }
+          nextIds.add(rtRes.data.id);
+        }
+        createdCount++;
+      }
+
+      setFormData((prev) => ({
+        ...prev,
+        responsavelTecnicoIds: Array.from(nextIds),
+      }));
+      await refreshEcosystem();
+      toast.success(
+        createdCount > 0
+          ? `${createdCount} Responsável(is) Técnico(s) cadastrado(s) na base Administra!`
+          : 'Responsável(is) Técnico(s) vinculado(s) à base Administra!'
+      );
+    } catch (error: any) {
+      toast.error(error?.message || 'Erro ao cadastrar Responsável Técnico no Administra.');
+    } finally {
+      setRegisteringEntity(null);
+    }
+  };
+
+  const handleSave = async (status: 'Rascunho' | 'Concluído' | 'Ofício de Pendências') => {
+    if (!formData.identificacaoEmpreendedor || !formData.cpfCnpj || !formData.processo || !formData.municipio) {
+      toast.error('Por favor, preencha os campos obrigatórios (Empreendedor, CPF/CNPJ, Processo e Município).');
+      return;
+    }
+
+    if (status === 'Concluído') {
+      const missingRegistrations: string[] = [];
+      if (!formData.empreendedorId) missingRegistrations.push('Empreendedor');
+      if (hasBarragemManual && !formData.barragemId) missingRegistrations.push('Barragem');
+      if (unregisteredRtNames.length > 0) {
+        missingRegistrations.push(`Responsável Técnico (${unregisteredRtNames.join(', ')})`);
+      }
+
+      if (missingRegistrations.length > 0) {
+        toast.error(
+          `Para concluir o parecer, cadastre antes na base Administra: ${missingRegistrations.join(', ')}. Você pode salvar como Rascunho temporariamente.`
+        );
+        return;
+      }
     }
 
     setLoading(true);
     try {
       const sanitizedFormData = sanitizeObject(formData);
-      const rtList = [
-        ...(sanitizedFormData.responsaveisTecnicos || []),
-        ...(sanitizedFormData.rtOutros || []).filter((n) => n.trim() !== ''),
-      ].map((nome) => ({
-        nome,
-        registroProfissional: sanitizedFormData.registroProfissionalRT || sanitizedFormData.artCreaMt,
-        formacaoProfissional: sanitizedFormData.formacaoProfissionalRT,
-        cpf: sanitizedFormData.cpfRT,
-      }));
+      const isFinalizing = status === 'Concluído';
 
-      const syncRes = await syncEntitiesFromForm({
-        existingEmpreendedorId: sanitizedFormData.empreendedorId,
-        existingBarragemId: sanitizedFormData.barragemId,
-        empreendedorNome: sanitizedFormData.identificacaoEmpreendedor,
-        cpfCnpj: sanitizedFormData.cpfCnpj,
-        logradouro: sanitizedFormData.logradouro,
-        numero: sanitizedFormData.numero,
-        complemento: sanitizedFormData.complemento,
-        bairro: sanitizedFormData.bairro,
-        municipio: sanitizedFormData.municipio,
-        cep: sanitizedFormData.cep,
-        carMt: sanitizedFormData.numCarMt,
-        nomeBarragem: sanitizedFormData.nomeBarragem || sanitizedFormData.localizacaoEmpreendimento,
-        codigoSnisb: sanitizedFormData.snisb,
-        processo: sanitizedFormData.processo,
-        cursoAguaBarrado: sanitizedFormData.nomeCursoAguaBarrado,
-        usoPreponderante: sanitizedFormData.usoPreponderante,
-        situacaoEmpreendimento: sanitizedFormData.situacaoEmpreendimento,
-        tipoBarragem: sanitizedFormData.tipoBarragem,
-        coordenadasGMS: sanitizedFormData.coordenadasGMS,
-        altura: sanitizedFormData.alturaBarragem,
-        volume: sanitizedFormData.volumeBarragem,
-        larguraCoroamento: sanitizedFormData.larguraCoroamento,
-        comprimentoCoroamento: sanitizedFormData.comprimentoCoroamento,
-        classificacaoBarragem: sanitizedFormData.classificacaoBarragem,
-        classificacaoDPA: sanitizedFormData.classificacaoDPA,
-        classificacaoCRI: sanitizedFormData.classificacaoCRI,
-        portariaClassificacao: sanitizedFormData.portariaClassificacao,
-        parecerClassificacao: sanitizedFormData.parecerClassificacao,
-        responsaveisTecnicos: rtList,
-        analista: sanitizedFormData.analistas?.[0] || 'Sistema Local',
-      });
+      let resolvedEmpreendedorId = sanitizedFormData.empreendedorId;
+      let resolvedBarragemId = sanitizedFormData.barragemId;
+      let resolvedRtIds = sanitizedFormData.responsavelTecnicoIds;
 
-      const resolvedEmpreendedorId = syncRes.empreendedorId || sanitizedFormData.empreendedorId;
-      const resolvedBarragemId = syncRes.barragemId || sanitizedFormData.barragemId;
-      const resolvedRtIds =
-        syncRes.responsavelTecnicoIds.length > 0
-          ? syncRes.responsavelTecnicoIds
-          : sanitizedFormData.responsavelTecnicoIds;
+      if (isFinalizing) {
+        const syncRes = await syncParecerEntitiesToAdministra(sanitizedFormData);
+        resolvedEmpreendedorId = syncRes.empreendedorId || sanitizedFormData.empreendedorId;
+        resolvedBarragemId = syncRes.barragemId || sanitizedFormData.barragemId;
+        resolvedRtIds =
+          syncRes.responsavelTecnicoIds.length > 0
+            ? syncRes.responsavelTecnicoIds
+            : sanitizedFormData.responsavelTecnicoIds;
+      }
+
+      const resolvedDataParecer = sanitizedFormData.dataParecer || new Date().toISOString().split('T')[0];
 
       const res = await saveParecer({
         ...sanitizedFormData,
@@ -499,9 +861,9 @@ const CHECKLISTS: { [key: string]: string[] } = {
         barragemId: resolvedBarragemId,
         responsavelTecnicoIds: resolvedRtIds,
         sourceSystem: sanitizedFormData.sourceSystem || CURRENT_SYSTEM_ID,
-        analista: formData.analistas?.[0] || 'Sistema Local',
+        analista: formData.analistas?.[0] || formData.analistasOutros?.[0] || 'Sistema Local',
         status: status,
-        dataParecer: new Date().toISOString().split('T')[0],
+        dataParecer: resolvedDataParecer,
         tipo_documento: formData.tipo_documento
       });
 
@@ -521,6 +883,7 @@ const CHECKLISTS: { [key: string]: string[] } = {
           ...prev,
           id: savedDoc.id,
           status,
+          dataParecer: resolvedDataParecer,
           empreendedorId: resolvedEmpreendedorId,
           barragemId: resolvedBarragemId,
           responsavelTecnicoIds: resolvedRtIds,
@@ -528,18 +891,42 @@ const CHECKLISTS: { [key: string]: string[] } = {
         }));
       }
 
-      await refreshData?.();
+      await Promise.all([refreshData?.(), isFinalizing ? refreshEcosystem() : Promise.resolve()]);
 
-      alert(`Parecer salvo como ${status === 'Ofício de Pendências' ? 'Rascunho' : status} com sucesso!`);
+      toast.success(
+        isFinalizing
+          ? 'Parecer concluído e sincronizado com o Administra!'
+          : 'Rascunho salvo localmente (dados não vinculados mantidos temporariamente no rascunho).'
+      );
       
       if (status === 'Ofício de Pendências') {
-        alert('Redirecionando para Ofício de Pendências...');
-        // Use onNavigate instead of window.location.href
+        toast.info('Abrindo Ofício de Pendências com os dados vinculados...');
         if (onNavigate) {
           onNavigate('oficio', {
             parecerId: formData.id || savedDoc?.id,
+            protocolo: '',
             processo: formData.processo,
-            identificacaoEmpreendedor: formData.identificacaoEmpreendedor,
+            interessado: formData.identificacaoEmpreendedor,
+            cpfCnpj: formData.cpfCnpj,
+            empreendimento: formData.nomeBarragem || formData.localizacaoEmpreendimento,
+            municipio: formData.municipio,
+            empreendedorId: resolvedEmpreendedorId,
+            barragemId: resolvedBarragemId,
+            responsavelTecnicoIds: resolvedRtIds,
+            coordenadasGMS: formData.coordenadasGMS,
+            logradouro: formData.logradouro,
+            numero: formData.numero,
+            complemento: formData.complemento,
+            bairro: formData.bairro,
+            cidadeUf: formData.cidadeUf,
+            cep: formData.cep,
+            responsaveisTecnicos: formData.responsaveisTecnicos,
+            rtOutros: formData.rtOutros,
+            temRTOutro: formData.temRTOutro,
+            art: formData.artCreaMt || formData.registroProfissionalRT || '',
+            analistas: formData.analistas,
+            analistasOutros: formData.analistasOutros,
+            temAnalistaOutro: formData.temAnalistaOutro,
             tipo_documento: '1° Oficio de Pendencias'
           });
         }
@@ -548,18 +935,24 @@ const CHECKLISTS: { [key: string]: string[] } = {
       if (status === 'Concluído') onBack();
     } catch (error: any) {
       console.error('Erro ao salvar parecer:', error);
-      alert(`Erro ao salvar parecer: ${error.message || 'Erro desconhecido'}`);
+      toast.error(`Erro ao salvar parecer: ${error.message || 'Erro desconhecido'}`);
     } finally {
       setLoading(false);
     }
   };
 
   const handleDownloadDocx = () => {
-    generateParecerDoc(formData);
-    logActivity({
-      action: 'DOWNLOAD_PARECER',
-      details: `Download do Parecer Técnico efetuado. Processo: ${formData.processo || 'S/P'}. Empreendedor: ${formData.identificacaoEmpreendedor || '---'}`
-    });
+    try {
+      generateParecerDoc(formData);
+      logActivity({
+        action: 'DOWNLOAD_PARECER',
+        details: `Download do Parecer Técnico efetuado. Processo: ${formData.processo || 'S/P'}. Empreendedor: ${formData.identificacaoEmpreendedor || '---'}`
+      });
+      toast.success('Documento Word (.docx) gerado.');
+    } catch (err) {
+      console.error('Erro ao gerar DOCX:', err);
+      toast.error('Erro ao gerar o arquivo Word.');
+    }
   };
 
   const handleDownloadPDF = async () => {
@@ -569,9 +962,10 @@ const CHECKLISTS: { [key: string]: string[] } = {
         action: 'DOWNLOAD_PARECER',
         details: `Download do Parecer Técnico (PDF) efetuado. Processo: ${formData.processo || 'S/P'}. Empreendedor: ${formData.identificacaoEmpreendedor || '---'}`
       });
+      toast.success('Documento PDF gerado.');
     } catch (err) {
       console.error('Erro ao gerar PDF:', err);
-      alert('Erro ao gerar o arquivo PDF.');
+      toast.error('Erro ao gerar o arquivo PDF.');
     }
   };
 
@@ -587,32 +981,32 @@ const CHECKLISTS: { [key: string]: string[] } = {
 
   return (
     <div className="min-h-screen bg-slate-50 pb-20">
-      {/* Sticky Top Section (Header + Stepper) */}
-      <div className="sticky top-0 z-40 bg-white/95 backdrop-blur-md border-b border-slate-200 shadow-sm">
+      {/* Top Section (Header + Stepper) */}
+      <div className="static md:sticky md:top-[61px] z-20 bg-white/95 backdrop-blur-md border-b border-slate-200 shadow-sm">
         {/* Header */}
-        <div className="px-6 py-4 flex justify-between items-center">
-          <div className="flex items-center gap-4">
-            <button onClick={onBack} className="p-2 hover:bg-slate-100 rounded-full transition-colors">
+        <div className="px-3 sm:px-6 py-3 sm:py-4 flex flex-col md:flex-row md:justify-between md:items-center gap-3">
+          <div className="flex items-center gap-3 sm:gap-4 min-w-0">
+            <button onClick={onBack} className="p-2 hover:bg-slate-100 rounded-full transition-colors shrink-0">
               <ArrowLeft size={20} className="text-slate-600" />
             </button>
-            <div>
-              <h1 className="text-xl font-black text-slate-900 tracking-tight">
+            <div className="min-w-0">
+              <h1 className="text-lg sm:text-xl font-black text-slate-900 tracking-tight truncate">
                 Parecer Técnico <span className="text-emerald-600">Fiscalização-CSB</span>
               </h1>
               <div className="flex items-center gap-2">
-                <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">
-                  {formData.id ? `Editando: ${formData.protocolo}` : 'Novo Documento'}
+                <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest truncate">
+                  {formData.id ? `Editando: ${formData.numParecerTecnico || formData.processo || 'Parecer'}` : 'Novo Documento'}
                 </p>
               </div>
             </div>
           </div>
-          <div className="flex gap-2">
+          <div className="flex flex-wrap gap-2 w-full md:w-auto">
             {!readOnly && (
               <>
                 <button 
                   onClick={() => handleSave('Rascunho')} 
                   disabled={loading}
-                  className="px-4 py-2 bg-white border border-slate-200 text-slate-700 rounded-xl font-bold text-xs hover:bg-slate-50 transition-all flex items-center gap-2"
+                  className="flex-1 sm:flex-none justify-center px-3 sm:px-4 py-2 bg-white border border-slate-200 text-slate-700 rounded-xl font-bold text-xs hover:bg-slate-50 transition-all flex items-center gap-1.5"
                 >
                   {loading ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />}
                   Salvar Rascunho
@@ -620,7 +1014,7 @@ const CHECKLISTS: { [key: string]: string[] } = {
                 <button 
                   onClick={() => handleSave('Concluído')} 
                   disabled={loading}
-                  className="px-4 py-2 bg-emerald-600 text-white rounded-xl font-bold text-xs hover:bg-emerald-700 transition-all flex items-center gap-2 shadow-lg shadow-emerald-600/20"
+                  className="flex-1 sm:flex-none justify-center px-3 sm:px-4 py-2 bg-emerald-600 text-white rounded-xl font-bold text-xs hover:bg-emerald-700 transition-all flex items-center gap-1.5 shadow-lg shadow-emerald-600/20"
                 >
                   {loading ? <Loader2 size={14} className="animate-spin" /> : <CheckCircle size={14} />}
                   Concluir Parecer
@@ -629,7 +1023,7 @@ const CHECKLISTS: { [key: string]: string[] } = {
             )}
             <button 
               onClick={handleDownloadPDF}
-              className="px-4 py-2 bg-rose-600 text-white rounded-xl font-bold text-xs hover:bg-rose-700 transition-all flex items-center gap-2 shadow-lg shadow-rose-600/20"
+              className="flex-1 sm:flex-none justify-center px-3 sm:px-4 py-2 bg-rose-600 text-white rounded-xl font-bold text-xs hover:bg-rose-700 transition-all flex items-center gap-1.5 shadow-lg shadow-rose-600/20"
               title="Exportar Parecer Técnico em PDF"
             >
               <Download size={14} />
@@ -637,7 +1031,7 @@ const CHECKLISTS: { [key: string]: string[] } = {
             </button>
             <button 
               onClick={handleDownloadDocx}
-              className="px-4 py-2 bg-blue-600 text-white rounded-xl font-bold text-xs hover:bg-blue-700 transition-all flex items-center gap-2 shadow-lg shadow-blue-600/20"
+              className="flex-1 sm:flex-none justify-center px-3 sm:px-4 py-2 bg-blue-600 text-white rounded-xl font-bold text-xs hover:bg-blue-700 transition-all flex items-center gap-1.5 shadow-lg shadow-blue-600/20"
             >
               <Download size={14} />
               Exportar Word
@@ -646,15 +1040,15 @@ const CHECKLISTS: { [key: string]: string[] } = {
         </div>
 
         {/* Stepper */}
-        <div className="py-4 border-t border-slate-100">
-          <div className="max-w-4xl mx-auto px-4 md:px-6">
-            <div className="flex justify-between items-center relative overflow-x-auto pb-2 md:pb-0 custom-scrollbar gap-4 md:gap-0">
+        <div className="py-3 sm:py-4 border-t border-slate-100">
+          <div className="max-w-4xl mx-auto px-3 sm:px-6">
+            <div className="flex justify-between items-center relative overflow-x-auto touch-scroll-x pb-2 md:pb-0 custom-scrollbar gap-3 md:gap-0">
               <div className="absolute top-1/2 left-0 w-full h-0.5 bg-slate-200 -translate-y-1/2 z-0 hidden md:block"></div>
               {steps.map((step) => (
                 <button
                   key={step.id}
                   onClick={() => setActiveStep(step.id)}
-                  className={`relative z-10 flex flex-col items-center gap-2 group min-w-[80px] md:min-w-0`}
+                  className={`relative z-10 flex flex-col items-center gap-2 group min-w-[72px] md:min-w-0`}
                 >
                   <div className={`w-8 h-8 rounded-full flex items-center justify-center border-2 transition-all shrink-0 ${
                     activeStep === step.id 
@@ -665,7 +1059,7 @@ const CHECKLISTS: { [key: string]: string[] } = {
                   }`}>
                     {activeStep > step.id ? <CheckCircle size={16} /> : React.cloneElement(step.icon as React.ReactElement, { size: 14 })}
                   </div>
-                  <span className={`text-[8px] md:text-[9px] font-black uppercase tracking-widest text-center leading-tight ${
+                  <span className={`text-[9px] font-black uppercase tracking-widest text-center leading-tight ${
                     activeStep === step.id ? 'text-emerald-600' : 'text-slate-400'
                   }`}>
                     {step.title}
@@ -678,16 +1072,16 @@ const CHECKLISTS: { [key: string]: string[] } = {
       </div>
 
       {/* Form Content */}
-      <div className="max-w-4xl mx-auto px-6 mt-8">
-        <div className="bg-white rounded-[2rem] shadow-xl border border-slate-100 p-8 md:p-12">
+      <div className="max-w-4xl mx-auto px-3 sm:px-6 mt-4 sm:mt-8">
+        <div className="bg-white rounded-2xl sm:rounded-[2rem] shadow-xl border border-slate-100 p-4 sm:p-8 md:p-12">
           
           {activeStep === 1 && (
-            <div className="space-y-10 animate-in fade-in slide-in-from-bottom-4 duration-500">
+            <div className="space-y-8 sm:space-y-10 animate-in fade-in slide-in-from-bottom-4 duration-500">
               <div className="flex items-center gap-3 border-b border-slate-100 pb-4">
                 <div className="p-2 bg-emerald-50 text-emerald-600 rounded-lg">
                   <Info size={20} />
                 </div>
-                <h2 className="text-xl font-black text-slate-900 tracking-tight">1. Informações Gerais</h2>
+                <h2 className="text-lg sm:text-xl font-black text-slate-900 tracking-tight">1. Informações Gerais</h2>
               </div>
 
               <AdministraEntityPicker
@@ -698,6 +1092,16 @@ const CHECKLISTS: { [key: string]: string[] } = {
                 cpfCnpj={formData.cpfCnpj}
                 codigoSnisb={formData.snisb}
                 nomeBarragem={formData.nomeBarragem || formData.localizacaoEmpreendimento}
+                onSaveToAdministra={handleSaveOnlyToAdministra}
+                savingToAdministra={savingToAdministra}
+                onRegisterEmpreendedor={handleRegisterEmpreendedor}
+                onRegisterBarragem={handleRegisterBarragem}
+                onRegisterRT={handleRegisterRTs}
+                hasPendingEmpreendedor={hasEmpreendedorManual && !formData.empreendedorId}
+                hasPendingBarragem={hasBarragemManual && !formData.barragemId}
+                hasPendingRT={unregisteredRtNames.length > 0}
+                unregisteredRtNames={unregisteredRtNames}
+                registeringEntity={registeringEntity}
                 onSelectEmpreendedor={(emp: EmpreendedorCanonico) => {
                   const matchedMun = matchMunicipioMT(emp.municipio);
                   setFormData(prev => ({
@@ -740,9 +1144,9 @@ const CHECKLISTS: { [key: string]: string[] } = {
                     parecerClassificacao: bar.parecerClassificacao || prev.parecerClassificacao,
                   }));
                 }}
-                onSelectRT={(rt: ResponsavelTecnicoCanonico) => {
+                onSelectRT={(rt: ResponsavelTecnicoCanonico, selectedArt?: string) => {
                   setFormData(prev => {
-                    const isKnown = OPS_RESPONSAVEL_TECNICO.includes(rt.nome);
+                    const isKnown = allRTOptions.includes(rt.nome);
                     const nextRTs = isKnown
                       ? Array.from(new Set([...(prev.responsaveisTecnicos || []), rt.nome]))
                       : (prev.responsaveisTecnicos || []);
@@ -757,7 +1161,9 @@ const CHECKLISTS: { [key: string]: string[] } = {
                       registroProfissionalRT: rt.registroProfissional || prev.registroProfissionalRT,
                       formacaoProfissionalRT: rt.formacaoProfissional || prev.formacaoProfissionalRT,
                       cpfRT: rt.cpf || prev.cpfRT,
-                      artCreaMt: prev.artCreaMt || rt.registroProfissional || '',
+                      artCreaMt: selectedArt
+                        ? selectedArt
+                        : prev.artCreaMt || rt.art || rt.registroProfissional || '',
                       responsavelTecnicoIds: Array.from(new Set([...(prev.responsavelTecnicoIds || []), rt.id])),
                     };
                   });
@@ -772,6 +1178,73 @@ const CHECKLISTS: { [key: string]: string[] } = {
                 }}
               />
 
+              {/* Metadados Pesquisáveis do Parecer */}
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-5 p-6 bg-slate-100/60 rounded-[2rem] border border-slate-200 shadow-inner">
+                <div className="space-y-2 md:col-span-2">
+                  <label className="text-[10px] font-black uppercase tracking-widest text-slate-600">Tipo de Parecer *</label>
+                  <select
+                    className="w-full px-4 py-3 bg-white border-2 border-slate-300 rounded-xl focus:border-emerald-600 focus:ring-4 focus:ring-emerald-500/10 font-bold text-slate-700 transition-all outline-none shadow-sm"
+                    value={formData.tipo_documento || 'Parecer Técnico'}
+                    onChange={(e) => handleInputChange('tipo_documento', e.target.value)}
+                    disabled={readOnly}
+                  >
+                    <option value="Parecer Técnico">Parecer Técnico</option>
+                    <option value="Parecer Técnico de ISR">Parecer Técnico de ISR</option>
+                    <option value="Parecer Técnico de ISE">Parecer Técnico de ISE</option>
+                    <option value="Parecer Técnico de PSB">Parecer Técnico de PSB</option>
+                    <option value="Parecer Técnico de PAE">Parecer Técnico de PAE</option>
+                    <option value="Parecer Técnico de RPSB">Parecer Técnico de RPSB</option>
+                    <option value="Parecer Técnico de Obras">Parecer Técnico de Obras</option>
+                  </select>
+                </div>
+
+                <div className="space-y-2">
+                  <label className="text-[10px] font-black uppercase tracking-widest text-slate-600">Nº do Parecer Técnico</label>
+                  <input
+                    type="text"
+                    className="w-full px-4 py-3 bg-white border-2 border-slate-300 rounded-xl focus:border-emerald-600 focus:ring-4 focus:ring-emerald-500/10 font-bold text-slate-700 transition-all outline-none shadow-sm"
+                    value={formData.numParecerTecnico || ''}
+                    onChange={(e) => handleInputChange('numParecerTecnico', e.target.value)}
+                    disabled={readOnly}
+                    placeholder="Ex: 123/CSB/SURH/2026"
+                  />
+                </div>
+
+                <div className="space-y-2">
+                  <label className="text-[10px] font-black uppercase tracking-widest text-slate-600">Processo SEMA/MT *</label>
+                  <input
+                    type="text"
+                    className="w-full px-4 py-3 bg-white border-2 border-slate-300 rounded-xl focus:border-emerald-600 focus:ring-4 focus:ring-emerald-500/10 font-bold text-slate-700 transition-all outline-none shadow-sm"
+                    value={formData.processo}
+                    onChange={(e) => handleInputChange('processo', e.target.value)}
+                    disabled={readOnly}
+                    placeholder="Ex: 123456/2026"
+                  />
+                </div>
+
+                <div className="space-y-2">
+                  <label className="text-[10px] font-black uppercase tracking-widest text-slate-600">Data de Recebimento</label>
+                  <input
+                    type="date"
+                    className="w-full px-4 py-3 bg-white border-2 border-slate-300 rounded-xl focus:border-emerald-600 focus:ring-4 focus:ring-emerald-500/10 font-bold text-slate-700 transition-all outline-none shadow-sm"
+                    value={formData.dataRecebimentoProcesso || ''}
+                    onChange={(e) => handleInputChange('dataRecebimentoProcesso', e.target.value)}
+                    disabled={readOnly}
+                  />
+                </div>
+
+                <div className="space-y-2">
+                  <label className="text-[10px] font-black uppercase tracking-widest text-slate-600">Data do Parecer</label>
+                  <input
+                    type="date"
+                    className="w-full px-4 py-3 bg-white border-2 border-slate-300 rounded-xl focus:border-emerald-600 focus:ring-4 focus:ring-emerald-500/10 font-bold text-slate-700 transition-all outline-none shadow-sm"
+                    value={formData.dataParecer || ''}
+                    onChange={(e) => handleInputChange('dataParecer', e.target.value)}
+                    disabled={readOnly}
+                  />
+                </div>
+              </div>
+
               {/* Informações do Empreendedor */}
               <div className="space-y-6">
                 <div 
@@ -780,7 +1253,7 @@ const CHECKLISTS: { [key: string]: string[] } = {
                 >
                   <div className="flex items-center gap-2 text-emerald-600">
                     <div className="w-8 h-8 rounded-full bg-emerald-100 flex items-center justify-center text-emerald-700 font-black text-xs">1</div>
-                    <h3 className="text-sm font-black uppercase tracking-widest">Informações do Empreendedor</h3>
+                    <h3 className="text-sm font-black uppercase tracking-widest">Informações do Empreendedor (Administra)</h3>
                   </div>
                   <div className="p-2 rounded-full hover:bg-emerald-50 text-emerald-600 transition-colors">
                     {expandedSections.empreendedor ? <ChevronUp size={18} /> : <ChevronDown size={18} />}
@@ -798,29 +1271,7 @@ const CHECKLISTS: { [key: string]: string[] } = {
                     >
                       <div className="grid grid-cols-1 md:grid-cols-2 gap-6 p-6 bg-slate-100/50 rounded-[2rem] border border-slate-200 shadow-inner">
                         <div className="space-y-2 md:col-span-2">
-                          <label className="text-[10px] font-black uppercase tracking-widest text-slate-600">Tipo de Documento</label>
-                          <input 
-                            type="text"
-                            className="w-full px-4 py-3 bg-slate-50 border-2 border-slate-300 rounded-xl font-bold text-slate-700 shadow-sm outline-none"
-                            value="Parecer Técnico"
-                            readOnly
-                          />
-                        </div>
-
-                        <div className="space-y-2 md:col-span-2">
-                          <label className="text-[10px] font-black uppercase tracking-widest text-slate-600">Processo SEMA/MT</label>
-                          <input 
-                            type="text" 
-                            className="w-full px-4 py-3 bg-white border-2 border-slate-300 rounded-xl focus:border-emerald-600 focus:ring-4 focus:ring-emerald-500/10 transition-all font-bold text-slate-700 shadow-sm"
-                            value={formData.processo}
-                            onChange={(e) => handleInputChange('processo', e.target.value)}
-                            disabled={readOnly}
-                            placeholder="Ex: 123456/2024"
-                          />
-                        </div>
-                        
-                        <div className="space-y-2">
-                          <label className="text-[10px] font-black uppercase tracking-widest text-slate-600">Identificação do Empreendedor</label>
+                          <label className="text-[10px] font-black uppercase tracking-widest text-slate-600">Identificação do Empreendedor *</label>
                           <input 
                             type="text" 
                             className="w-full px-4 py-3 bg-white border-2 border-slate-300 rounded-xl focus:border-emerald-600 focus:ring-4 focus:ring-emerald-500/10 transition-all font-bold text-slate-700 shadow-sm"
@@ -831,13 +1282,25 @@ const CHECKLISTS: { [key: string]: string[] } = {
                         </div>
                         
                         <div className="space-y-2">
-                          <label className="text-[10px] font-black uppercase tracking-widest text-slate-600">CPF / CNPJ</label>
+                          <label className="text-[10px] font-black uppercase tracking-widest text-slate-600">CPF / CNPJ *</label>
                           <input 
                             type="text" 
                             className="w-full px-4 py-3 bg-white border-2 border-slate-300 rounded-xl focus:border-emerald-600 focus:ring-4 focus:ring-emerald-500/10 transition-all font-bold text-slate-700 shadow-sm"
                             value={formData.cpfCnpj}
                             onChange={(e) => handleInputChange('cpfCnpj', e.target.value)}
                             disabled={readOnly}
+                          />
+                        </div>
+
+                        <div className="space-y-2">
+                          <label className="text-[10px] font-black uppercase tracking-widest text-slate-600">Nº CAR/MT</label>
+                          <input 
+                            type="text" 
+                            className="w-full px-4 py-3 bg-white border-2 border-slate-300 rounded-xl focus:border-emerald-600 focus:ring-4 focus:ring-emerald-500/10 transition-all font-bold text-slate-700 shadow-sm"
+                            value={formData.numCarMt}
+                            onChange={(e) => handleInputChange('numCarMt', e.target.value)}
+                            disabled={readOnly}
+                            placeholder="MT-0000000-..."
                           />
                         </div>
 
@@ -930,6 +1393,36 @@ const CHECKLISTS: { [key: string]: string[] } = {
                             )}
                           </AnimatePresence>
                         </div>
+
+                        {!readOnly && (
+                          <div className="md:col-span-2 pt-3 border-t border-slate-200/70 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
+                            {formData.empreendedorId ? (
+                              <span className="inline-flex items-center gap-1.5 text-xs font-bold text-emerald-700">
+                                <CheckCircle2 size={14} className="text-emerald-600 shrink-0" />
+                                Empreendedor cadastrado e vinculado à base Administra.
+                              </span>
+                            ) : (
+                              <>
+                                <span className="text-xs font-semibold text-amber-800">
+                                  Empreendedor não vinculado no Administra (temporário apenas no rascunho).
+                                </span>
+                                <button
+                                  type="button"
+                                  disabled={registeringEntity !== null}
+                                  onClick={() => void handleRegisterEmpreendedor()}
+                                  className="px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-black flex items-center justify-center gap-1.5 transition-colors shadow-sm disabled:opacity-50 cursor-pointer shrink-0"
+                                >
+                                  {registeringEntity === 'empreendedor' ? (
+                                    <Loader2 size={14} className="animate-spin" />
+                                  ) : (
+                                    <PlusCircle size={14} />
+                                  )}
+                                  Cadastrar Empreendedor na Base de Dados
+                                </button>
+                              </>
+                            )}
+                          </div>
+                        )}
                       </div>
                     </motion.div>
                   )}
@@ -961,15 +1454,30 @@ const CHECKLISTS: { [key: string]: string[] } = {
                       className="overflow-hidden"
                     >
                       <div className="grid grid-cols-1 md:grid-cols-2 gap-6 p-6 bg-slate-100/50 rounded-[2rem] border border-slate-200 shadow-inner">
-                        <div className="space-y-2 md:col-span-2">
-                          <label className="text-[10px] font-black uppercase tracking-widest text-slate-600">Empreendimento (Fazenda/Barragem)</label>
+                        <div className="space-y-2">
+                          <label className="text-[10px] font-black uppercase tracking-widest text-slate-600">Nome da Barragem / Fazenda (Administra)</label>
                           <input 
                             type="text" 
                             className="w-full px-4 py-3 bg-white border-2 border-slate-300 rounded-xl focus:border-emerald-600 focus:ring-4 focus:ring-emerald-500/10 font-bold text-slate-700 transition-all outline-none shadow-sm"
-                            value={formData.localizacaoEmpreendimento}
-                            onChange={(e) => handleInputChange('localizacaoEmpreendimento', e.target.value)}
+                            value={formData.nomeBarragem || formData.localizacaoEmpreendimento}
+                            onChange={(e) => {
+                              handleInputChange('nomeBarragem', e.target.value);
+                              handleInputChange('localizacaoEmpreendimento', e.target.value);
+                            }}
                             disabled={readOnly}
-                            placeholder="Ex: Fazenda Santa Fé"
+                            placeholder="Ex: Barragem Fazenda Santa Fé"
+                          />
+                        </div>
+
+                        <div className="space-y-2">
+                          <label className="text-[10px] font-black uppercase tracking-widest text-slate-600">Código SNISB (Administra)</label>
+                          <input 
+                            type="text" 
+                            className="w-full px-4 py-3 bg-white border-2 border-slate-300 rounded-xl focus:border-emerald-600 focus:ring-4 focus:ring-emerald-500/10 font-bold text-slate-700 transition-all outline-none shadow-sm"
+                            value={formData.snisb}
+                            onChange={(e) => handleInputChange('snisb', e.target.value)}
+                            disabled={readOnly}
+                            placeholder="Ex: 12345"
                           />
                         </div>
 
@@ -1216,6 +1724,36 @@ const CHECKLISTS: { [key: string]: string[] } = {
                             disabled={readOnly}
                           />
                         </div>
+
+                        {!readOnly && (
+                          <div className="md:col-span-2 pt-3 border-t border-slate-200/70 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
+                            {formData.barragemId ? (
+                              <span className="inline-flex items-center gap-1.5 text-xs font-bold text-emerald-700">
+                                <CheckCircle2 size={14} className="text-emerald-600 shrink-0" />
+                                Barragem cadastrada e vinculada à base Administra.
+                              </span>
+                            ) : (
+                              <>
+                                <span className="text-xs font-semibold text-amber-800">
+                                  Barragem não vinculada no Administra (temporária apenas no rascunho).
+                                </span>
+                                <button
+                                  type="button"
+                                  disabled={registeringEntity !== null}
+                                  onClick={() => void handleRegisterBarragem()}
+                                  className="px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-black flex items-center justify-center gap-1.5 transition-colors shadow-sm disabled:opacity-50 cursor-pointer shrink-0"
+                                >
+                                  {registeringEntity === 'barragem' ? (
+                                    <Loader2 size={14} className="animate-spin" />
+                                  ) : (
+                                    <PlusCircle size={14} />
+                                  )}
+                                  Cadastrar Barragem na Base de Dados
+                                </button>
+                              </>
+                            )}
+                          </div>
+                        )}
                       </div>
                     </motion.div>
                   )}
@@ -1379,6 +1917,42 @@ const CHECKLISTS: { [key: string]: string[] } = {
 
                         <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
                           <div className="space-y-2">
+                            <label className="text-[10px] font-black uppercase tracking-widest text-slate-400">CPF do RT (Administra)</label>
+                            <input 
+                              type="text" 
+                              className="w-full px-4 py-3 bg-white border border-slate-200 rounded-xl focus:ring-2 focus:ring-emerald-500/20 transition-all"
+                              value={formData.cpfRT || ''}
+                              onChange={(e) => handleInputChange('cpfRT', e.target.value)}
+                              disabled={readOnly}
+                              placeholder="000.000.000-00"
+                            />
+                          </div>
+
+                          <div className="space-y-2">
+                            <label className="text-[10px] font-black uppercase tracking-widest text-slate-400">Formação Profissional (Administra)</label>
+                            <input 
+                              type="text" 
+                              className="w-full px-4 py-3 bg-white border border-slate-200 rounded-xl focus:ring-2 focus:ring-emerald-500/20 transition-all"
+                              value={formData.formacaoProfissionalRT || ''}
+                              onChange={(e) => handleInputChange('formacaoProfissionalRT', e.target.value)}
+                              disabled={readOnly}
+                              placeholder="Ex: Engenheiro Civil"
+                            />
+                          </div>
+
+                          <div className="space-y-2">
+                            <label className="text-[10px] font-black uppercase tracking-widest text-slate-400">Registro Profissional / CREA (Administra)</label>
+                            <input 
+                              type="text" 
+                              className="w-full px-4 py-3 bg-white border border-slate-200 rounded-xl focus:ring-2 focus:ring-emerald-500/20 transition-all"
+                              value={formData.registroProfissionalRT || ''}
+                              onChange={(e) => handleInputChange('registroProfissionalRT', e.target.value)}
+                              disabled={readOnly}
+                              placeholder="Ex: CREA-MT 12345"
+                            />
+                          </div>
+
+                          <div className="space-y-2">
                             <label className="text-[10px] font-black uppercase tracking-widest text-slate-400">n° ART</label>
                             <input 
                               type="text" 
@@ -1412,6 +1986,36 @@ const CHECKLISTS: { [key: string]: string[] } = {
                             />
                           </div>
                         </div>
+
+                        {!readOnly && usedRtNames.length > 0 && (
+                          <div className="pt-3 border-t border-slate-200/70 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
+                            {unregisteredRtNames.length === 0 ? (
+                              <span className="inline-flex items-center gap-1.5 text-xs font-bold text-emerald-700">
+                                <CheckCircle2 size={14} className="text-emerald-600 shrink-0" />
+                                Responsável(is) Técnico(s) cadastrado(s) na base Administra.
+                              </span>
+                            ) : (
+                              <>
+                                <span className="text-xs font-semibold text-amber-800">
+                                  RT(s) pendente(s) no Administra: <strong>{unregisteredRtNames.join(', ')}</strong>.
+                                </span>
+                                <button
+                                  type="button"
+                                  disabled={registeringEntity !== null}
+                                  onClick={() => void handleRegisterRTs()}
+                                  className="px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-black flex items-center justify-center gap-1.5 transition-colors shadow-sm disabled:opacity-50 cursor-pointer shrink-0"
+                                >
+                                  {registeringEntity === 'rt' ? (
+                                    <Loader2 size={14} className="animate-spin" />
+                                  ) : (
+                                    <PlusCircle size={14} />
+                                  )}
+                                  Cadastrar Responsável Técnico na Base de Dados
+                                </button>
+                              </>
+                            )}
+                          </div>
+                        )}
                       </div>
                     </motion.div>
                   )}
@@ -1781,16 +2385,13 @@ const CHECKLISTS: { [key: string]: string[] } = {
                 {formData.temOficioPendencia && (
                   <div className="space-y-4 animate-in zoom-in-95 duration-300">
                     <button 
+                      type="button"
                       onClick={() => handleSave('Ofício de Pendências')}
-                      className="w-full py-4 bg-amber-600 text-white rounded-2xl font-black uppercase tracking-widest text-xs hover:bg-amber-700 transition-all shadow-xl shadow-amber-600/20"
+                      disabled={loading || readOnly}
+                      className="w-full py-4 bg-amber-600 text-white rounded-2xl font-black uppercase tracking-widest text-xs hover:bg-amber-700 transition-all shadow-xl shadow-amber-600/20 disabled:opacity-50"
                     >
                       Gerar Ofício e Salvar Rascunho
                     </button>
-                    <div className="pt-6 border-t border-slate-200 flex justify-center gap-4">
-                      <button className="px-4 py-2 bg-blue-50 text-blue-600 rounded-lg text-xs font-bold hover:bg-blue-100 transition-all">Visualizar</button>
-                      <button className="px-4 py-2 bg-slate-50 text-slate-600 rounded-lg text-xs font-bold hover:bg-slate-100 transition-all">Editar</button>
-                      <button className="px-4 py-2 bg-red-50 text-red-600 rounded-lg text-xs font-bold hover:bg-red-100 transition-all">Excluir</button>
-                    </div>
                   </div>
                 )}
               </div>
@@ -1851,11 +2452,13 @@ const CHECKLISTS: { [key: string]: string[] } = {
               <div className="space-y-6">
                 <div className="bg-white border border-slate-200 shadow-2xl rounded-[2rem] overflow-hidden max-w-4xl mx-auto">
                   <div className="p-12 text-slate-800 font-serif leading-relaxed text-sm space-y-6">
-                    {/* Header Simulation */}
+                      {/* Header Simulation */}
                     <div className="text-center space-y-1 mb-8">
                       <p className="font-bold uppercase">Estado de Mato Grosso</p>
                       <p className="font-bold uppercase">Secretaria de Estado de Meio Ambiente</p>
-                      <p className="font-bold uppercase">Parecer Técnico – CSB/CCRH/SEMA-MT</p>
+                      <p className="font-bold uppercase">
+                        {formData.tipo_documento || 'Parecer Técnico'} Nº {formData.numParecerTecnico || formData.processo || '___'} – CSB/CCRH/SEMA-MT
+                      </p>
                     </div>
 
                     <div className="space-y-4">
@@ -1863,7 +2466,7 @@ const CHECKLISTS: { [key: string]: string[] } = {
                       
                       <p className="text-justify">
                         <span className="font-bold">Assunto: </span>
-                        Parecer Técnico da análise do Relatório de {formData.pecasTecnicas?.join(', ') || '___'} do empreendimento {formData.localizacaoEmpreendimento || '___'} do empreendedor {formData.identificacaoEmpreendedor || '___'} no município de {formData.municipio || '___'}/MT sob as coordenadas {`Lat: ${formData.coordenadasGMS.lat.g}°${formData.coordenadasGMS.lat.m}'${formData.coordenadasGMS.lat.s}" Long: ${formData.coordenadasGMS.long.g}°${formData.coordenadasGMS.long.m}'${formData.coordenadasGMS.long.s}"`}.
+                        {formData.tipo_documento || 'Parecer Técnico'} da análise do Relatório de {formData.pecasTecnicas?.join(', ') || '___'} do empreendimento {formData.nomeBarragem || formData.localizacaoEmpreendimento || '___'} do empreendedor {formData.identificacaoEmpreendedor || '___'} no município de {formData.municipio || '___'}/MT sob as coordenadas {`Lat: ${formData.coordenadasGMS.lat.g}°${formData.coordenadasGMS.lat.m}'${formData.coordenadasGMS.lat.s}" Long: ${formData.coordenadasGMS.long.g}°${formData.coordenadasGMS.long.m}'${formData.coordenadasGMS.long.s}"`}.
                       </p>
 
                       <div className="space-y-1 pt-4">
@@ -1871,7 +2474,7 @@ const CHECKLISTS: { [key: string]: string[] } = {
                         <div className="grid grid-cols-1 gap-1 pt-2">
                           <p><span className="font-bold">Empreendedor:</span> {formData.identificacaoEmpreendedor || '___'}</p>
                           <p><span className="font-bold">CPF/CNPJ:</span> {formData.cpfCnpj || '___'}</p>
-                          <p><span className="font-bold">Empreendimento (Fazenda/Barragem):</span> {formData.localizacaoEmpreendimento || '___'}</p>
+                          <p><span className="font-bold">Empreendimento (Fazenda/Barragem):</span> {formData.nomeBarragem || formData.localizacaoEmpreendimento || '___'}</p>
                           <p><span className="font-bold">Nº CAR:</span> {formData.numCarMt || '___'}</p>
                           <p><span className="font-bold">Município/UF:</span> {formData.municipio || '___'}/MT</p>
                           <p><span className="font-bold">Finalidade do barramento:</span> {formData.usoPreponderante === 'Outro' ? formData.usoPreponderanteOutro : formData.usoPreponderante || '___'}</p>
@@ -1881,14 +2484,14 @@ const CHECKLISTS: { [key: string]: string[] } = {
                           <p><span className="font-bold">Nº do Processo:</span> {formData.processo || '___'}</p>
                           <p><span className="font-bold">Coordenadas:</span> {`Lat: ${formData.coordenadasGMS.lat.g}°${formData.coordenadasGMS.lat.m}'${formData.coordenadasGMS.lat.s}" Long: ${formData.coordenadasGMS.long.g}°${formData.coordenadasGMS.long.m}'${formData.coordenadasGMS.long.s}"`}</p>
                           <p><span className="font-bold">Portaria de Classificação:</span> {formData.portariaClassificacao || '___'}</p>
-                          <p><span className="font-bold">Classe da Barragem:</span> {formData.classificacaoBarragem || '___'}</p>
+                          <p><span className="font-bold">Classe / DPA / CRI:</span> {formData.classificacaoBarragem || '___'} | DPA: {formData.classificacaoDPA || '___'} | CRI: {formData.classificacaoCRI || '___'}</p>
                           <p><span className="font-bold">Altura do talude:</span> {formData.alturaBarragem || '___'} m</p>
                           <p><span className="font-bold">Largura do coroamento:</span> {formData.larguraCoroamento || '___'} m</p>
                           <p><span className="font-bold">Volume armazenado de projeto:</span> {formData.volumeBarragem || '___'} hm³</p>
                           <p><span className="font-bold">Comprimento do Coroamento (m):</span> {formData.comprimentoCoroamento || '___'} m</p>
                         </div>
                         <p className="text-xs italic pt-2">
-                          *Dados apresentados pelo responsável técnico {formData.responsavelTecnico || '___'} mediado pela ART CREA/MT n° {formData.artCreaMt || '___'}
+                          *Dados apresentados pelo responsável técnico {[...(formData.responsaveisTecnicos || []), ...(formData.rtOutros || []).filter(Boolean)].join(', ') || formData.responsavelTecnico || '___'} mediado pela ART CREA/MT n° {formData.artCreaMt || '___'}
                         </p>
                       </div>
 
@@ -1912,7 +2515,7 @@ const CHECKLISTS: { [key: string]: string[] } = {
                         </div>
 
                         <p className="text-justify">
-                          Este Parecer Técnico vem analisar os documentos apresentados mediante o protocolo n° {formData.numProtocoloAnalisado || '___'} de {formData.dataProtocolo || '___'} pelo responsável técnico {formData.responsavelTecnico || '___'} mediado pela ART CREA/MT n° {formData.artCreaMt || '___'} para a atividade de {formData.artAtividade || '___'}.
+                          Este {formData.tipo_documento || 'Parecer Técnico'} vem analisar os documentos apresentados mediante o protocolo n° {formData.numProtocoloAnalisado || '___'} de {formData.dataProtocolo || '___'} pelo responsável técnico {[...(formData.responsaveisTecnicos || []), ...(formData.rtOutros || []).filter(Boolean)].join(', ') || formData.responsavelTecnico || '___'} mediado pela ART CREA/MT n° {formData.artCreaMt || '___'} para a atividade de {formData.artAtividade || '___'}.
                         </p>
                       </div>
 
@@ -1921,10 +2524,10 @@ const CHECKLISTS: { [key: string]: string[] } = {
                         <div key={idx} className="space-y-4 pt-4">
                           <p className="font-bold uppercase">{idx + 2}. APRESENTAÇÃO DO RELATÓRIO DE {peca.toUpperCase()}</p>
                           <p className="text-justify">
-                            Os documentos analisados foram apresentados pelo responsável técnico {formData.responsavelTecnico || '___'} mediado pela ART CREA/MT n° {formData.artCreaMt || '___'} para a atividade de {formData.artAtividade || '___'}, protocolizados em {formData.dataProtocolo || '___'} sob numeração de {formData.numProtocoloAnalisado || '___'}, juntados ao processo administrativo n° {formData.processo || '___'}.
+                            Os documentos analisados foram apresentados pelo responsável técnico {[...(formData.responsaveisTecnicos || []), ...(formData.rtOutros || []).filter(Boolean)].join(', ') || formData.responsavelTecnico || '___'} mediado pela ART CREA/MT n° {formData.artCreaMt || '___'} para a atividade de {formData.artAtividade || '___'}, protocolizados em {formData.dataProtocolo || '___'} sob numeração de {formData.numProtocoloAnalisado || '___'}, juntados ao processo administrativo n° {formData.processo || '___'}.
                           </p>
                           <p className="text-justify">
-                            Foi apresentado Relatório de {peca}. Conforme relatório apresentado, a inspeção visual ocorreu em {formData.dataInspecao || '___'}, sob responsabilidade técnica de {formData.responsavelTecnico || '___'}.
+                            Foi apresentado Relatório de {peca}. Conforme relatório apresentado, a inspeção visual ocorreu em {formData.dataInspecao || '___'}, sob responsabilidade técnica de {[...(formData.responsaveisTecnicos || []), ...(formData.rtOutros || []).filter(Boolean)].join(', ') || formData.responsavelTecnico || '___'}.
                           </p>
                           <p className="text-justify">
                             Conforme informações prestadas, o barramento localizado nas coordenadas Lat: {formData.coordenadasGMS.lat.g}°{formData.coordenadasGMS.lat.m}'{formData.coordenadasGMS.lat.s}" Long: {formData.coordenadasGMS.long.g}°{formData.coordenadasGMS.long.m}'{formData.coordenadasGMS.long.s}", possui altura de {formData.alturaBarragem || '___'}m, comprimento de {formData.comprimentoCoroamento || '___'}m, capacidade do reservatório {formData.volumeBarragem || '___'} hm³.
@@ -1959,13 +2562,13 @@ const CHECKLISTS: { [key: string]: string[] } = {
                       <div className="space-y-4 pt-4">
                         <p className="font-bold uppercase">{formData.pecasTecnicas.length + 2}. PARECER</p>
                         <p className="text-justify">
-                          Os documentos em análise foram protocolados sob n° {formData.numProtocoloAnalisado || '___'} em {formData.dataProtocolo || '___'} juntados ao processo administrativo n° {formData.processo || '___'}, elaborado por {formData.responsavelTecnico || '___'} mediado pela ART CREA/MT n° {formData.artCreaMt || '___'} para a atividade de {formData.artAtividade || '___'}.
+                          Os documentos em análise foram protocolados sob n° {formData.numProtocoloAnalisado || '___'} em {formData.dataProtocolo || '___'} juntados ao processo administrativo n° {formData.processo || '___'}, elaborado por {[...(formData.responsaveisTecnicos || []), ...(formData.rtOutros || []).filter(Boolean)].join(', ') || formData.responsavelTecnico || '___'} mediado pela ART CREA/MT n° {formData.artCreaMt || '___'} para a atividade de {formData.artAtividade || '___'}.
                         </p>
                         <p className="text-justify">
                           Conforme informações prestadas pelo responsável técnico, as anomalias a serem adequadas não apresentam nível de perigo de alerta ou emergência à barragem, porém faz-se necessária adoção de adequações para que não evoluam, portanto, entendemos que o Relatório Técnico de {formData.pecasTecnicas.join(', ') || '___'} contemplou os itens mínimos a serem apreciados.
                         </p>
                         <p className="text-justify">
-                          Recomendamos que sejam realizadas as adequações e manutenções indicadas no Relatório de {formData.pecasTecnicas.join(', ') || '___'} encaminhado por {formData.responsavelTecnico || '___'}. Mesmo a barragem não estando submetida a PNSB, é de suma importância que sejam realizadas as adequações e manutenções conforme as boas práticas da engenharia, estando o empreendedor passível de atividades de fiscalizações do órgão regulador.
+                          Recomendamos que sejam realizadas as adequações e manutenções indicadas no Relatório de {formData.pecasTecnicas.join(', ') || '___'} encaminhado por {[...(formData.responsaveisTecnicos || []), ...(formData.rtOutros || []).filter(Boolean)].join(', ') || formData.responsavelTecnico || '___'}. Mesmo a barragem não estando submetida a PNSB, é de suma importância que sejam realizadas as adequações e manutenções conforme as boas práticas da engenharia, estando o empreendedor passível de atividades de fiscalizações do órgão regulador.
                         </p>
                         <p className="text-justify">
                           A aprovação do rol documental apresentado não isenta de uma possível reclassificação futura, devendo o empreendedor informar ao órgão ser houver instalação de estruturas civis na área afetada a jusante. Ainda, é responsabilidade do empreendedor a gestão de segurança da barragem e reparação de danos decorrentes de seu rompimento, vazamento ou mau funcionamento independentemente da existência de culpa.
@@ -1976,6 +2579,7 @@ const CHECKLISTS: { [key: string]: string[] } = {
                       {formData.topicosExtras.map((topico, tIdx) => (
                         <div key={topico.id} className="space-y-4 pt-4 relative group">
                           <button 
+                            type="button"
                             onClick={() => {
                               const newTopicos = formData.topicosExtras.filter(t => t.id !== topico.id);
                               handleInputChange('topicosExtras', newTopicos);
@@ -2010,6 +2614,7 @@ const CHECKLISTS: { [key: string]: string[] } = {
                       ))}
 
                       <button 
+                        type="button"
                         onClick={() => {
                           const newTopicos = [...formData.topicosExtras, { id: crypto.randomUUID(), titulo: 'CONDICIONANTES', conteudo: '' }];
                           handleInputChange('topicosExtras', newTopicos);
@@ -2041,12 +2646,37 @@ const CHECKLISTS: { [key: string]: string[] } = {
                 </div>
                 
                 <div className="space-y-2">
-                  <label className="text-[10px] font-black uppercase tracking-widest text-slate-400">Edição Manual da Revisão Final (Opcional)</label>
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <label className="text-[10px] font-black uppercase tracking-widest text-slate-400">
+                      Edição Manual da Revisão Final (Opcional — deixe vazio para usar o texto dinâmico em código)
+                    </label>
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => handleInputChange('revisaoParecer', dynamicParecerText)}
+                        disabled={readOnly}
+                        className="px-3 py-1.5 rounded-lg bg-emerald-50 border border-emerald-200 text-emerald-700 text-[10px] font-black uppercase tracking-wider hover:bg-emerald-100 flex items-center gap-1 transition-colors"
+                      >
+                        <RefreshCw size={11} /> Carregar Texto Dinâmico para Edição
+                      </button>
+                      {formData.revisaoParecer && (
+                        <button
+                          type="button"
+                          onClick={() => handleInputChange('revisaoParecer', '')}
+                          disabled={readOnly}
+                          className="px-3 py-1.5 rounded-lg bg-slate-100 border border-slate-200 text-slate-600 text-[10px] font-black uppercase tracking-wider hover:bg-slate-200 transition-colors"
+                        >
+                          Usar Padrão Automático
+                        </button>
+                      )}
+                    </div>
+                  </div>
                   <textarea 
-                    className="w-full p-6 bg-white border border-slate-200 rounded-[2rem] min-h-[200px]"
+                    className="w-full p-6 bg-white border border-slate-200 rounded-[2rem] min-h-[220px] font-serif text-sm text-slate-800"
                     value={formData.revisaoParecer}
                     onChange={(e) => handleInputChange('revisaoParecer', e.target.value)}
-                    placeholder="Altere o texto final se necessário para o documento exportado..."
+                    disabled={readOnly}
+                    placeholder={dynamicParecerText}
                   />
                 </div>
               </div>

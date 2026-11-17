@@ -120,15 +120,128 @@ CREATE INDEX IF NOT EXISTS idx_notificacoes_user_id ON public.notificacoes(user_
 CREATE INDEX IF NOT EXISTS idx_pareceres_status ON public.pareceres(status);
 
 -- ===============================================================
--- 5. SUPORTE A MÚLTIPLAS COORDENADAS DE BARRAGENS (NOTIFICAÇÕES)
+-- 5. COLUNAS PLANAS DE PESQUISA E INTEGRAÇÃO (SEM JSON)
 -- ===============================================================
-ALTER TABLE public.notificacoes 
-ADD COLUMN IF NOT EXISTS barragens JSONB DEFAULT '[]'::jsonb;
+ALTER TABLE IF EXISTS public.pareceres
+  ADD COLUMN IF NOT EXISTS tipo_documento TEXT DEFAULT 'Parecer Técnico',
+  ADD COLUMN IF NOT EXISTS num_parecer_tecnico TEXT,
+  ADD COLUMN IF NOT EXISTS processo TEXT,
+  ADD COLUMN IF NOT EXISTS num_protocolo_analisado TEXT,
+  ADD COLUMN IF NOT EXISTS data_parecer TEXT,
+  ADD COLUMN IF NOT EXISTS data_recebimento_processo TEXT,
+  ADD COLUMN IF NOT EXISTS data_protocolo TEXT,
+  ADD COLUMN IF NOT EXISTS data_inspecao TEXT,
+  ADD COLUMN IF NOT EXISTS status TEXT DEFAULT 'Rascunho',
+  ADD COLUMN IF NOT EXISTS analista TEXT,
+  ADD COLUMN IF NOT EXISTS analistas_nomes TEXT,
+  ADD COLUMN IF NOT EXISTS analistas_outros TEXT,
+  ADD COLUMN IF NOT EXISTS empreendedor_id TEXT,
+  ADD COLUMN IF NOT EXISTS empreendedor_nome TEXT,
+  ADD COLUMN IF NOT EXISTS cpf_cnpj TEXT,
+  ADD COLUMN IF NOT EXISTS car_mt TEXT,
+  ADD COLUMN IF NOT EXISTS barragem_id TEXT,
+  ADD COLUMN IF NOT EXISTS barragem_nome TEXT,
+  ADD COLUMN IF NOT EXISTS codigo_snisb TEXT,
+  ADD COLUMN IF NOT EXISTS municipio TEXT,
+  ADD COLUMN IF NOT EXISTS lat_gms TEXT,
+  ADD COLUMN IF NOT EXISTS long_gms TEXT,
+  ADD COLUMN IF NOT EXISTS responsavel_tecnico_ids TEXT,
+  ADD COLUMN IF NOT EXISTS responsavel_tecnico_nomes TEXT,
+  ADD COLUMN IF NOT EXISTS art_numero TEXT,
+  ADD COLUMN IF NOT EXISTS art_atividade TEXT,
+  ADD COLUMN IF NOT EXISTS pecas_tecnicas TEXT,
+  ADD COLUMN IF NOT EXISTS pecas_tecnicas_outro TEXT,
+  ADD COLUMN IF NOT EXISTS classificacao_barragem TEXT,
+  ADD COLUMN IF NOT EXISTS classificacao_dpa TEXT,
+  ADD COLUMN IF NOT EXISTS classificacao_cri TEXT,
+  ADD COLUMN IF NOT EXISTS portaria_classificacao TEXT,
+  ADD COLUMN IF NOT EXISTS parecer_classificacao TEXT,
+  ADD COLUMN IF NOT EXISTS tem_oficio_pendencia BOOLEAN DEFAULT false,
+  ADD COLUMN IF NOT EXISTS oficio_id TEXT,
+  ADD COLUMN IF NOT EXISTS analise_tecnica TEXT,
+  ADD COLUMN IF NOT EXISTS conclusao TEXT,
+  ADD COLUMN IF NOT EXISTS introducao_particularidade TEXT,
+  ADD COLUMN IF NOT EXISTS apresentacao_relatorio_conclusao TEXT,
+  ADD COLUMN IF NOT EXISTS dpa_nao_pnsb_texto TEXT,
+  ADD COLUMN IF NOT EXISTS topicos_extras_texto TEXT,
+  ADD COLUMN IF NOT EXISTS revisao_parecer_custom TEXT,
+  ADD COLUMN IF NOT EXISTS source_system TEXT DEFAULT 'NOTIFICA';
 
-CREATE INDEX IF NOT EXISTS idx_notificacoes_barragens ON public.notificacoes USING gin (barragens);
+ALTER TABLE IF EXISTS public.oficios
+  ADD COLUMN IF NOT EXISTS tipo_documento TEXT DEFAULT '1° Oficio de Pendencias',
+  ADD COLUMN IF NOT EXISTS protocolo TEXT,
+  ADD COLUMN IF NOT EXISTS processo TEXT,
+  ADD COLUMN IF NOT EXISTS assunto TEXT,
+  ADD COLUMN IF NOT EXISTS data_emissao TEXT,
+  ADD COLUMN IF NOT EXISTS status TEXT DEFAULT 'Rascunho',
+  ADD COLUMN IF NOT EXISTS situacao_cumprimento TEXT DEFAULT 'Pendente / Em aberto',
+  ADD COLUMN IF NOT EXISTS prazo_cumprimento INTEGER DEFAULT 90,
+  ADD COLUMN IF NOT EXISTS prorrogacao_prazo INTEGER DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS analista TEXT,
+  ADD COLUMN IF NOT EXISTS analistas_nomes TEXT,
+  ADD COLUMN IF NOT EXISTS analistas_outros TEXT,
+  ADD COLUMN IF NOT EXISTS empreendedor_id TEXT,
+  ADD COLUMN IF NOT EXISTS empreendedor_nome TEXT,
+  ADD COLUMN IF NOT EXISTS cpf_cnpj TEXT,
+  ADD COLUMN IF NOT EXISTS barragem_id TEXT,
+  ADD COLUMN IF NOT EXISTS barragem_nome TEXT,
+  ADD COLUMN IF NOT EXISTS municipio TEXT,
+  ADD COLUMN IF NOT EXISTS lat_gms TEXT,
+  ADD COLUMN IF NOT EXISTS long_gms TEXT,
+  ADD COLUMN IF NOT EXISTS responsavel_tecnico_ids TEXT,
+  ADD COLUMN IF NOT EXISTS responsavel_tecnico_nomes TEXT,
+  ADD COLUMN IF NOT EXISTS art_numero TEXT,
+  ADD COLUMN IF NOT EXISTS pendencias_texto TEXT,
+  ADD COLUMN IF NOT EXISTS anotacoes_internas TEXT,
+  ADD COLUMN IF NOT EXISTS source_system TEXT DEFAULT 'NOTIFICA';
 
-UPDATE public.notificacoes 
-SET barragens = COALESCE(payload->'barragens', '[]'::jsonb)
-WHERE barragens IS NULL OR barragens = '[]'::jsonb;
+ALTER TABLE IF EXISTS public.notificacoes
+  ADD COLUMN IF NOT EXISTS tipo_documento TEXT DEFAULT 'Notificação',
+  ADD COLUMN IF NOT EXISTS notificacao_gerada TEXT,
+  ADD COLUMN IF NOT EXISTS oficio_gerado TEXT,
+  ADD COLUMN IF NOT EXISTS num_processo TEXT,
+  ADD COLUMN IF NOT EXISTS data_notificacao TEXT,
+  ADD COLUMN IF NOT EXISTS prazo_vencimento TEXT,
+  ADD COLUMN IF NOT EXISTS situacao TEXT DEFAULT 'Em aberto',
+  ADD COLUMN IF NOT EXISTS status TEXT DEFAULT 'Rascunho',
+  ADD COLUMN IF NOT EXISTS analista TEXT,
+  ADD COLUMN IF NOT EXISTS analistas_nomes TEXT,
+  ADD COLUMN IF NOT EXISTS empreendedor_id TEXT,
+  ADD COLUMN IF NOT EXISTS empreendedor_nome TEXT,
+  ADD COLUMN IF NOT EXISTS tipo_documento_identificacao TEXT DEFAULT 'CPF',
+  ADD COLUMN IF NOT EXISTS cpf_cnpj TEXT,
+  ADD COLUMN IF NOT EXISTS car_mt TEXT,
+  ADD COLUMN IF NOT EXISTS barragem_id TEXT,
+  ADD COLUMN IF NOT EXISTS barragem_ids TEXT,
+  ADD COLUMN IF NOT EXISTS barragem_nome TEXT,
+  ADD COLUMN IF NOT EXISTS barragens_nomes TEXT,
+  ADD COLUMN IF NOT EXISTS coordenadas_resumo TEXT,
+  ADD COLUMN IF NOT EXISTS municipio TEXT,
+  ADD COLUMN IF NOT EXISTS lat_gms TEXT,
+  ADD COLUMN IF NOT EXISTS long_gms TEXT,
+  ADD COLUMN IF NOT EXISTS objetivo TEXT,
+  ADD COLUMN IF NOT EXISTS anotacoes_internas TEXT,
+  ADD COLUMN IF NOT EXISTS texto_notificacao_custom TEXT,
+  ADD COLUMN IF NOT EXISTS source_system TEXT DEFAULT 'NOTIFICA';
 
-COMMENT ON COLUMN public.notificacoes.barragens IS 'Lista ordenada de coordenadas e barragens identificadas na propriedade';
+CREATE INDEX IF NOT EXISTS idx_pareceres_numero ON public.pareceres(num_parecer_tecnico);
+CREATE INDEX IF NOT EXISTS idx_pareceres_data ON public.pareceres(data_parecer);
+CREATE INDEX IF NOT EXISTS idx_pareceres_analista ON public.pareceres(analista);
+CREATE INDEX IF NOT EXISTS idx_pareceres_tipo ON public.pareceres(tipo_documento);
+CREATE INDEX IF NOT EXISTS idx_pareceres_emp_id ON public.pareceres(empreendedor_id);
+CREATE INDEX IF NOT EXISTS idx_pareceres_bar_id ON public.pareceres(barragem_id);
+
+CREATE INDEX IF NOT EXISTS idx_oficios_protocolo ON public.oficios(protocolo);
+CREATE INDEX IF NOT EXISTS idx_oficios_data ON public.oficios(data_emissao);
+CREATE INDEX IF NOT EXISTS idx_oficios_analista ON public.oficios(analista);
+CREATE INDEX IF NOT EXISTS idx_oficios_tipo ON public.oficios(tipo_documento);
+CREATE INDEX IF NOT EXISTS idx_oficios_emp_id ON public.oficios(empreendedor_id);
+CREATE INDEX IF NOT EXISTS idx_oficios_bar_id ON public.oficios(barragem_id);
+
+CREATE INDEX IF NOT EXISTS idx_notificacoes_numero ON public.notificacoes(notificacao_gerada);
+CREATE INDEX IF NOT EXISTS idx_notificacoes_data ON public.notificacoes(data_notificacao);
+CREATE INDEX IF NOT EXISTS idx_notificacoes_analista ON public.notificacoes(analista);
+CREATE INDEX IF NOT EXISTS idx_notificacoes_tipo ON public.notificacoes(tipo_documento);
+CREATE INDEX IF NOT EXISTS idx_notificacoes_emp_id ON public.notificacoes(empreendedor_id);
+CREATE INDEX IF NOT EXISTS idx_notificacoes_bar_id ON public.notificacoes(barragem_id);
+CREATE INDEX IF NOT EXISTS idx_notificacoes_car ON public.notificacoes(car_mt);

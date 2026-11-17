@@ -5,9 +5,11 @@ import {
   ChangeRequestTargetType,
   CURRENT_SYSTEM_ID,
   EcosystemProductSummary,
+  EcosystemRemoteSystemDiagnostic,
   EcosystemSystemConnectionStatus,
   EcosystemSystemId,
   EmpreendedorCanonico,
+  IntegratedSystemsDataPayload,
   ResponsavelTecnicoCanonico,
 } from '../types/ecosystem';
 import {
@@ -17,7 +19,9 @@ import {
   FormEntitySyncInput,
   FormEntitySyncResult,
   getEcosystemConnections,
+  LinkArtRTInput,
 } from '../data';
+import { createEmptyDiagnostics } from '../data/localEcosystemRepository';
 import { DataContext } from './DataContext';
 import { logActivity } from '../lib/audit';
 
@@ -25,13 +29,29 @@ interface EcosystemContextType {
   empreendedores: EmpreendedorCanonico[];
   barragens: BarragemCanonica[];
   responsaveisTecnicos: ResponsavelTecnicoCanonico[];
+  externalEmpreendedores: EmpreendedorCanonico[];
+  externalBarragens: BarragemCanonica[];
+  externalResponsaveisTecnicos: ResponsavelTecnicoCanonico[];
   changeRequests: ChangeRequest[];
   externalProducts: EcosystemProductSummary[];
   allEcosystemProducts: EcosystemProductSummary[];
   connections: EcosystemSystemConnectionStatus[];
+  remoteDiagnostics: Record<EcosystemSystemId, EcosystemRemoteSystemDiagnostic>;
   pendingIncomingCount: number;
   loading: boolean;
+  isPullingExternal: boolean;
+  lastExternalSyncAt: string | null;
   refreshEcosystem: () => Promise<void>;
+  pullFromIntegratedSystems: (system?: EcosystemSystemId) => Promise<IntegratedSystemsDataPayload>;
+  importEmpreendedorToAdministra: (
+    emp: EmpreendedorCanonico
+  ) => Promise<{ success: boolean; data?: EmpreendedorCanonico; message?: string }>;
+  importBarragemToAdministra: (
+    bar: BarragemCanonica
+  ) => Promise<{ success: boolean; data?: BarragemCanonica; message?: string }>;
+  importRTToAdministra: (
+    rt: ResponsavelTecnicoCanonico
+  ) => Promise<{ success: boolean; data?: ResponsavelTecnicoCanonico; message?: string }>;
   canEditDirectly: (sourceSystem?: EcosystemSystemId) => boolean;
   saveEmpreendedor: (
     data: Omit<
@@ -52,6 +72,9 @@ interface EcosystemContextType {
       'id' | 'createdAt' | 'updatedAt' | 'registryOwnerSystem'
     > & { id?: string },
     options?: { allowEditFromForm?: boolean }
+  ) => Promise<{ success: boolean; data?: ResponsavelTecnicoCanonico; message?: string }>;
+  linkArtToRT: (
+    input: LinkArtRTInput
   ) => Promise<{ success: boolean; data?: ResponsavelTecnicoCanonico; message?: string }>;
   deleteResponsavelTecnico: (id: string) => Promise<{ success: boolean; message?: string }>;
   syncEntitiesFromForm: (input: FormEntitySyncInput) => Promise<FormEntitySyncResult>;
@@ -84,24 +107,44 @@ export const EcosystemContext = createContext<EcosystemContextType>({
   empreendedores: [],
   barragens: [],
   responsaveisTecnicos: [],
+  externalEmpreendedores: [],
+  externalBarragens: [],
+  externalResponsaveisTecnicos: [],
   changeRequests: [],
   externalProducts: [],
   allEcosystemProducts: [],
   connections: [],
+  remoteDiagnostics: createEmptyDiagnostics(),
   pendingIncomingCount: 0,
   loading: true,
+  isPullingExternal: false,
+  lastExternalSyncAt: null,
   refreshEcosystem: async () => {},
+  pullFromIntegratedSystems: async () => ({
+    empreendedores: [],
+    barragens: [],
+    responsaveisTecnicos: [],
+    products: [],
+    diagnostics: createEmptyDiagnostics(),
+    fetchedAt: '',
+  }),
+  importEmpreendedorToAdministra: async () => ({ success: false }),
+  importBarragemToAdministra: async () => ({ success: false }),
+  importRTToAdministra: async () => ({ success: false }),
   canEditDirectly: () => true,
   saveEmpreendedor: async () => ({ success: false }),
   deleteEmpreendedor: async () => ({ success: false }),
   saveBarragem: async () => ({ success: false }),
   deleteBarragem: async () => ({ success: false }),
   saveResponsavelTecnico: async () => ({ success: false }),
+  linkArtToRT: async () => ({ success: false }),
   deleteResponsavelTecnico: async () => ({ success: false }),
   syncEntitiesFromForm: async () => ({
+    barragemIds: [],
     responsavelTecnicoIds: [],
     createdEmpreendedor: false,
     createdBarragem: false,
+    createdBarragemCount: 0,
     createdRTCount: 0,
   }),
   submitChangeRequest: async () => ({ success: false }),
@@ -128,37 +171,85 @@ export const EcosystemProvider: React.FC<{ children: ReactNode }> = ({ children 
   const [empreendedores, setEmpreendedores] = useState<EmpreendedorCanonico[]>([]);
   const [barragens, setBarragens] = useState<BarragemCanonica[]>([]);
   const [responsaveisTecnicos, setResponsaveisTecnicos] = useState<ResponsavelTecnicoCanonico[]>([]);
+  const [externalEmpreendedores, setExternalEmpreendedores] = useState<EmpreendedorCanonico[]>([]);
+  const [externalBarragens, setExternalBarragens] = useState<BarragemCanonica[]>([]);
+  const [externalResponsaveisTecnicos, setExternalResponsaveisTecnicos] = useState<ResponsavelTecnicoCanonico[]>([]);
   const [changeRequests, setChangeRequests] = useState<ChangeRequest[]>([]);
   const [externalProducts, setExternalProducts] = useState<EcosystemProductSummary[]>([]);
+  const [remoteDiagnostics, setRemoteDiagnostics] = useState<Record<EcosystemSystemId, EcosystemRemoteSystemDiagnostic>>(
+    () => createEmptyDiagnostics()
+  );
   const [connections, setConnections] = useState<EcosystemSystemConnectionStatus[]>(() =>
     getEcosystemConnections()
   );
   const [loading, setLoading] = useState(true);
+  const [isPullingExternal, setIsPullingExternal] = useState(false);
+  const [lastExternalSyncAt, setLastExternalSyncAt] = useState<string | null>(null);
   const bootstrappedRef = useRef(false);
+
+  const applyIntegratedPayload = useCallback((payload: IntegratedSystemsDataPayload) => {
+    setExternalEmpreendedores(
+      (payload.empreendedores || []).filter((e) => e.sourceSystem !== 'ADMINISTRA')
+    );
+    setExternalBarragens(
+      (payload.barragens || []).filter((b) => b.sourceSystem !== 'ADMINISTRA')
+    );
+    setExternalResponsaveisTecnicos(
+      (payload.responsaveisTecnicos || []).filter((rt) => rt.sourceSystem !== 'ADMINISTRA')
+    );
+    setExternalProducts(
+      (payload.products || []).filter((p) => p.systemId !== 'NOTIFICA')
+    );
+    if (payload.diagnostics) {
+      setRemoteDiagnostics(payload.diagnostics);
+    }
+    if (payload.fetchedAt) {
+      setLastExternalSyncAt(payload.fetchedAt);
+    }
+  }, []);
 
   const refreshEcosystem = useCallback(async () => {
     setLoading(true);
     try {
-      const [emps, bars, rts, reqs, ext, serverConnections] = await Promise.all([
+      administraRepository.invalidateCache?.();
+      const [emps, bars, rts, reqs, integrated, serverConnections] = await Promise.all([
         administraRepository.getEmpreendedores(),
         administraRepository.getBarragens(),
         administraRepository.getResponsaveisTecnicos(),
         ecosystemRepository.getChangeRequests(),
-        ecosystemRepository.getExternalProducts(),
+        ecosystemRepository.getIntegratedSystemsData(),
         fetchEcosystemConnections(),
       ]);
       setEmpreendedores(emps);
       setBarragens(bars);
       setResponsaveisTecnicos(rts);
       setChangeRequests(reqs);
-      setExternalProducts(ext);
+      applyIntegratedPayload(integrated);
       setConnections(serverConnections);
     } catch (err) {
       console.warn('Erro ao carregar dados do ecossistema:', err);
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [applyIntegratedPayload]);
+
+  const pullFromIntegratedSystems = useCallback(
+    async (system?: EcosystemSystemId): Promise<IntegratedSystemsDataPayload> => {
+      setIsPullingExternal(true);
+      try {
+        const [integrated, serverConnections] = await Promise.all([
+          ecosystemRepository.getIntegratedSystemsData(system),
+          fetchEcosystemConnections(),
+        ]);
+        applyIntegratedPayload(integrated);
+        setConnections(serverConnections);
+        return integrated;
+      } finally {
+        setIsPullingExternal(false);
+      }
+    },
+    [applyIntegratedPayload]
+  );
 
   useEffect(() => {
     refreshEcosystem();
@@ -281,6 +372,14 @@ export const EcosystemProvider: React.FC<{ children: ReactNode }> = ({ children 
               carMt: n.carMt,
               nomeBarragem: n.nomeFantasia || n.barragens?.[0]?.nome,
               processo: n.numProcesso,
+              barragens: Array.isArray(n.barragens)
+                ? n.barragens.map((b, idx) => ({
+                    existingBarragemId: b.barragemId,
+                    nomeBarragem: b.nome || n.nomeFantasia || `Barragem ${idx + 1}`,
+                    codigoSnisb: b.codigoSnisb,
+                    municipio: b.municipio || n.municipioEmpreendimento,
+                  }))
+                : undefined,
               analista: n.analista || n.analistas?.[0],
             });
             if (cpfNorm) existingCpfs.add(cpfNorm);
@@ -470,6 +569,20 @@ export const EcosystemProvider: React.FC<{ children: ReactNode }> = ({ children 
     }
   };
 
+  const linkArtToRT = async (input: LinkArtRTInput) => {
+    try {
+      const saved = await administraRepository.linkArtToRT(input);
+      setResponsaveisTecnicos((prev) => [saved, ...prev.filter((rt) => rt.id !== saved.id)]);
+      logActivity({
+        action: 'LINK_ART_RT_ADMINISTRA',
+        details: `Nova ART "${input.art}" vinculada ao RT "${saved.nome}"${input.barragemNome || input.empreendedorNome ? ` (${input.barragemNome || input.empreendedorNome})` : ''} no Administra.`,
+      });
+      return { success: true, data: saved };
+    } catch (err: any) {
+      return { success: false, message: err.message || 'Erro ao vincular ART ao responsável técnico.' };
+    }
+  };
+
   const deleteResponsavelTecnico = async (id: string) => {
     try {
       await administraRepository.deleteResponsavelTecnico(id);
@@ -489,7 +602,7 @@ export const EcosystemProvider: React.FC<{ children: ReactNode }> = ({ children 
     await refreshEcosystem();
     logActivity({
       action: 'SYNC_ADMINISTRA_FROM_FORM',
-      details: `Sincronização automática com Administra: empreendedor=${result.createdEmpreendedor ? 'novo' : 'atualizado/existente'}, barragem=${result.createdBarragem ? 'nova' : 'atualizada/existente'}, novos RTs=${result.createdRTCount}.`,
+      details: `Sincronização automática com Administra: empreendedor=${result.createdEmpreendedor ? 'novo' : 'atualizado/existente'}, barragens=${result.barragemIds.length} (novas=${result.createdBarragemCount}), novos RTs=${result.createdRTCount}.`,
     });
     return result;
   };
@@ -575,25 +688,138 @@ export const EcosystemProvider: React.FC<{ children: ReactNode }> = ({ children 
     [allEcosystemProducts]
   );
 
+  const importEmpreendedorToAdministra = async (emp: EmpreendedorCanonico) => {
+    const cpfNorm = normalizeDigits(emp.cpfCnpjNormalizado || emp.cpfCnpj);
+    const existing = empreendedores.find(
+      (item) =>
+        (cpfNorm && item.cpfCnpjNormalizado === cpfNorm) ||
+        (normalizeText(item.nome) && normalizeText(item.nome) === normalizeText(emp.nome))
+    );
+    return saveEmpreendedor(
+      {
+        id: existing?.id,
+        nome: emp.nome,
+        tipoPessoa: emp.tipoPessoa,
+        cpfCnpj: emp.cpfCnpj,
+        telefone: emp.telefone || existing?.telefone,
+        email: emp.email || existing?.email,
+        logradouro: emp.logradouro || existing?.logradouro,
+        numero: emp.numero || existing?.numero,
+        complemento: emp.complemento || existing?.complemento,
+        bairro: emp.bairro || existing?.bairro,
+        municipio: emp.municipio || existing?.municipio,
+        uf: emp.uf || existing?.uf || 'MT',
+        cep: emp.cep || existing?.cep,
+        carMt: emp.carMt || existing?.carMt,
+        sourceSystem: existing?.sourceSystem || emp.sourceSystem || CURRENT_SYSTEM_ID,
+        createdByAnalyst: emp.createdByAnalyst || existing?.createdByAnalyst,
+      },
+      { allowEditFromForm: true }
+    );
+  };
+
+  const importBarragemToAdministra = async (bar: BarragemCanonica) => {
+    const snisbNorm = normalizeText(bar.codigoSnisb);
+    const barNorm = normalizeText(bar.nomeBarragem);
+    const existing = barragens.find(
+      (item) =>
+        (snisbNorm && normalizeText(item.codigoSnisb) === snisbNorm) ||
+        (barNorm && normalizeText(item.nomeBarragem) === barNorm)
+    );
+    const empCpfNorm = normalizeDigits(bar.empreendedorCpfCnpj);
+    const matchedEmp = empreendedores.find(
+      (e) =>
+        (empCpfNorm && e.cpfCnpjNormalizado === empCpfNorm) ||
+        (bar.empreendedorNome && normalizeText(e.nome) === normalizeText(bar.empreendedorNome))
+    );
+    return saveBarragem(
+      {
+        id: existing?.id,
+        empreendedorId: matchedEmp?.id || bar.empreendedorId || existing?.empreendedorId || '',
+        empreendedorNome: matchedEmp?.nome || bar.empreendedorNome || existing?.empreendedorNome,
+        empreendedorCpfCnpj: matchedEmp?.cpfCnpj || bar.empreendedorCpfCnpj || existing?.empreendedorCpfCnpj,
+        nomeBarragem: bar.nomeBarragem,
+        codigoSnisb: bar.codigoSnisb || existing?.codigoSnisb,
+        processoReferencia: bar.processoReferencia || existing?.processoReferencia,
+        municipio: bar.municipio || existing?.municipio || '',
+        uf: bar.uf || existing?.uf || 'MT',
+        cursoAguaBarrado: bar.cursoAguaBarrado || existing?.cursoAguaBarrado,
+        usoPreponderante: bar.usoPreponderante || existing?.usoPreponderante,
+        situacaoEmpreendimento: bar.situacaoEmpreendimento || existing?.situacaoEmpreendimento,
+        tipoBarragem: bar.tipoBarragem || existing?.tipoBarragem,
+        coordenadasGMS: bar.coordenadasGMS || existing?.coordenadasGMS,
+        altura: bar.altura || existing?.altura,
+        volume: bar.volume || existing?.volume,
+        larguraCoroamento: bar.larguraCoroamento || existing?.larguraCoroamento,
+        comprimentoCoroamento: bar.comprimentoCoroamento || existing?.comprimentoCoroamento,
+        classificacaoBarragem: bar.classificacaoBarragem || existing?.classificacaoBarragem,
+        classificacaoDPA: bar.classificacaoDPA || existing?.classificacaoDPA,
+        classificacaoCRI: bar.classificacaoCRI || existing?.classificacaoCRI,
+        portariaClassificacao: bar.portariaClassificacao || existing?.portariaClassificacao,
+        parecerClassificacao: bar.parecerClassificacao || existing?.parecerClassificacao,
+        sourceSystem: existing?.sourceSystem || bar.sourceSystem || CURRENT_SYSTEM_ID,
+        createdByAnalyst: bar.createdByAnalyst || existing?.createdByAnalyst,
+      },
+      { allowEditFromForm: true }
+    );
+  };
+
+  const importRTToAdministra = async (rt: ResponsavelTecnicoCanonico) => {
+    const cpfNorm = normalizeDigits(rt.cpf);
+    const regNorm = normalizeText(rt.registroProfissional);
+    const nameNorm = normalizeText(rt.nome);
+    const existing = responsaveisTecnicos.find(
+      (item) =>
+        (cpfNorm && normalizeDigits(item.cpf) === cpfNorm) ||
+        (regNorm && normalizeText(item.registroProfissional) === regNorm) ||
+        (nameNorm && normalizeText(item.nome) === nameNorm)
+    );
+    return saveResponsavelTecnico(
+      {
+        id: existing?.id,
+        nome: rt.nome,
+        registroProfissional: rt.registroProfissional || existing?.registroProfissional,
+        formacaoProfissional: rt.formacaoProfissional || existing?.formacaoProfissional,
+        cpf: rt.cpf || existing?.cpf,
+        telefone: rt.telefone || existing?.telefone,
+        email: rt.email || existing?.email,
+        sourceSystem: existing?.sourceSystem || rt.sourceSystem || CURRENT_SYSTEM_ID,
+        createdByAnalyst: rt.createdByAnalyst || existing?.createdByAnalyst,
+      },
+      { allowEditFromForm: true }
+    );
+  };
+
   return (
     <EcosystemContext.Provider
       value={{
         empreendedores,
         barragens,
         responsaveisTecnicos,
+        externalEmpreendedores,
+        externalBarragens,
+        externalResponsaveisTecnicos,
         changeRequests,
         externalProducts,
         allEcosystemProducts,
         connections,
+        remoteDiagnostics,
         pendingIncomingCount,
         loading,
+        isPullingExternal,
+        lastExternalSyncAt,
         refreshEcosystem,
+        pullFromIntegratedSystems,
+        importEmpreendedorToAdministra,
+        importBarragemToAdministra,
+        importRTToAdministra,
         canEditDirectly,
         saveEmpreendedor,
         deleteEmpreendedor,
         saveBarragem,
         deleteBarragem,
         saveResponsavelTecnico,
+        linkArtToRT,
         deleteResponsavelTecnico,
         syncEntitiesFromForm,
         submitChangeRequest,
@@ -605,3 +831,4 @@ export const EcosystemProvider: React.FC<{ children: ReactNode }> = ({ children 
     </EcosystemContext.Provider>
   );
 };
+

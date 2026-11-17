@@ -5,13 +5,17 @@ import {
   Database,
   FileCheck2,
   GitPullRequest,
+  Loader2,
   PencilLine,
+  PlusCircle,
   RefreshCw,
+  Save,
   Search,
   UserCheck,
   Waves,
   X,
 } from 'lucide-react';
+import { toast } from 'sonner';
 import { EcosystemContext } from '../../contexts/EcosystemContext';
 import {
   BarragemCanonica,
@@ -34,8 +38,19 @@ interface AdministraEntityPickerProps {
   nomeBarragem?: string;
   onSelectEmpreendedor: (empreendedor: EmpreendedorCanonico) => void;
   onSelectBarragem: (barragem: BarragemCanonica) => void;
-  onSelectRT?: (rt: ResponsavelTecnicoCanonico) => void;
+  onSelectRT?: (rt: ResponsavelTecnicoCanonico, selectedArt?: string) => void;
   onClearLinks?: () => void;
+  onSaveToAdministra?: () => Promise<void>;
+  savingToAdministra?: boolean;
+  onRegisterEmpreendedor?: () => Promise<void>;
+  onRegisterBarragem?: () => Promise<void>;
+  onRegisterRT?: () => Promise<void>;
+  hasPendingEmpreendedor?: boolean;
+  hasPendingBarragem?: boolean;
+  hasPendingRT?: boolean;
+  registeringEntity?: 'empreendedor' | 'barragem' | 'rt' | null;
+  unregisteredRtNames?: string[];
+  barragemCount?: number;
 }
 
 export const AdministraEntityPicker: React.FC<AdministraEntityPickerProps> = ({
@@ -50,6 +65,17 @@ export const AdministraEntityPicker: React.FC<AdministraEntityPickerProps> = ({
   onSelectBarragem,
   onSelectRT,
   onClearLinks,
+  onSaveToAdministra,
+  savingToAdministra = false,
+  onRegisterEmpreendedor,
+  onRegisterBarragem,
+  onRegisterRT,
+  hasPendingEmpreendedor = false,
+  hasPendingBarragem = false,
+  hasPendingRT = false,
+  registeringEntity = null,
+  unregisteredRtNames = [],
+  barragemCount,
 }) => {
   const {
     empreendedores,
@@ -59,15 +85,20 @@ export const AdministraEntityPicker: React.FC<AdministraEntityPickerProps> = ({
     refreshEcosystem,
     canEditDirectly,
     getProductsForEntity,
+    linkArtToRT,
   } = useContext(EcosystemContext);
 
   const [empQuery, setEmpQuery] = useState('');
   const [barQuery, setBarQuery] = useState('');
   const [rtQuery, setRtQuery] = useState('');
+  const [stagedRtId, setStagedRtId] = useState('');
+  const [newArtInput, setNewArtInput] = useState('');
+  const [savingArt, setSavingArt] = useState(false);
   const [showProducts, setShowProducts] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [remoteEmpHits, setRemoteEmpHits] = useState<EmpreendedorCanonico[]>([]);
   const [remoteBarHits, setRemoteBarHits] = useState<BarragemCanonica[]>([]);
+  const [remoteRtHits, setRemoteRtHits] = useState<ResponsavelTecnicoCanonico[]>([]);
 
   const [changeModalState, setChangeModalState] = useState<{
     isOpen: boolean;
@@ -80,33 +111,41 @@ export const AdministraEntityPicker: React.FC<AdministraEntityPickerProps> = ({
   });
 
   useEffect(() => {
-    const q = (empQuery.trim() || barQuery.trim());
-    if (q.length < 3 || (typeof navigator !== 'undefined' && !navigator.onLine)) {
-      setRemoteEmpHits([]);
-      setRemoteBarHits([]);
+    const q = (empQuery.trim() || barQuery.trim() || rtQuery.trim());
+    const hasQuery = q.length >= 2;
+    if ((!hasQuery && !selectedEmpreendedorId) || (typeof navigator !== 'undefined' && !navigator.onLine)) {
+      if (!hasQuery) {
+        setRemoteEmpHits([]);
+        setRemoteBarHits([]);
+        setRemoteRtHits([]);
+      }
       return;
     }
 
     const controller = new AbortController();
     const timer = setTimeout(async () => {
       try {
-        const res = await fetch(`/api/registry/search?q=${encodeURIComponent(q)}`, {
+        const params = new URLSearchParams();
+        if (hasQuery) params.set('q', q);
+        if (selectedEmpreendedorId) params.set('empreendedorId', selectedEmpreendedorId);
+        const res = await fetch(`/api/registry/search?${params.toString()}`, {
           signal: controller.signal,
         });
         if (!res.ok) return;
         const data = await res.json();
         if (Array.isArray(data.empreendedores)) setRemoteEmpHits(data.empreendedores);
         if (Array.isArray(data.barragens)) setRemoteBarHits(data.barragens);
+        if (Array.isArray(data.responsaveisTecnicos)) setRemoteRtHits(data.responsaveisTecnicos);
       } catch {
         // Ignore aborted or offline requests
       }
-    }, 280);
+    }, 260);
 
     return () => {
       clearTimeout(timer);
       controller.abort();
     };
-  }, [empQuery, barQuery]);
+  }, [empQuery, barQuery, rtQuery, selectedEmpreendedorId]);
 
   const allEmpreendedores = useMemo(() => {
     if (remoteEmpHits.length === 0) return empreendedores;
@@ -119,6 +158,12 @@ export const AdministraEntityPicker: React.FC<AdministraEntityPickerProps> = ({
     const seen = new Set(barragens.map((b) => b.id));
     return [...barragens, ...remoteBarHits.filter((b) => !seen.has(b.id))];
   }, [barragens, remoteBarHits]);
+
+  const allResponsaveisTecnicos = useMemo(() => {
+    if (remoteRtHits.length === 0) return responsaveisTecnicos;
+    const seen = new Set(responsaveisTecnicos.map((r) => r.id));
+    return [...responsaveisTecnicos, ...remoteRtHits.filter((r) => !seen.has(r.id))];
+  }, [responsaveisTecnicos, remoteRtHits]);
 
   const selectedEmpreendedor = useMemo(
     () => allEmpreendedores.find((e) => e.id === selectedEmpreendedorId) || null,
@@ -185,18 +230,54 @@ export const AdministraEntityPicker: React.FC<AdministraEntityPickerProps> = ({
 
   const filteredRTs = useMemo(() => {
     const raw = rtQuery.trim();
-    if (!raw) return responsaveisTecnicos.slice(0, 20);
+    if (!raw) return allResponsaveisTecnicos.slice(0, 20);
     const textQ = normalizeSearchText(raw);
     const digitsQ = normalizeDocumentNumber(raw);
-    return responsaveisTecnicos
+    return allResponsaveisTecnicos
       .filter(
         (rt) =>
           normalizeSearchText(rt.nome).includes(textQ) ||
           normalizeSearchText(rt.registroProfissional).includes(textQ) ||
+          normalizeSearchText(rt.art).includes(textQ) ||
+          (rt.artsVinculadas || []).some((a) => normalizeSearchText(a.art).includes(textQ)) ||
           (digitsQ.length >= 2 && normalizeDocumentNumber(rt.cpf || '').includes(digitsQ))
       )
       .slice(0, 20);
-  }, [responsaveisTecnicos, rtQuery]);
+  }, [allResponsaveisTecnicos, rtQuery]);
+
+  const stagedRt = useMemo(
+    () => allResponsaveisTecnicos.find((rt) => rt.id === stagedRtId) || null,
+    [allResponsaveisTecnicos, stagedRtId]
+  );
+
+  const stagedRtArts = useMemo(() => {
+    if (!stagedRt) return [];
+    const entries: Array<{
+      art: string;
+      barragemNome?: string;
+      empreendedorNome?: string;
+      createdAt?: string;
+    }> = [];
+    const seen = new Set<string>();
+    const addEntry = (
+      artValue?: string,
+      barragemNome?: string,
+      empreendedorNome?: string,
+      createdAt?: string
+    ) => {
+      const trimmed = (artValue || '').trim();
+      if (!trimmed) return;
+      const key = trimmed.toUpperCase();
+      if (seen.has(key)) return;
+      seen.add(key);
+      entries.push({ art: trimmed, barragemNome, empreendedorNome, createdAt });
+    };
+    (stagedRt.artsVinculadas || []).forEach((item) =>
+      addEntry(item.art, item.barragemNome, item.empreendedorNome, item.createdAt)
+    );
+    addEntry(stagedRt.art);
+    return entries;
+  }, [stagedRt]);
 
   const matchedProducts = useMemo(() => {
     return getProductsForEntity({
@@ -251,8 +332,55 @@ export const AdministraEntityPicker: React.FC<AdministraEntityPickerProps> = ({
     }
   };
 
+  const handleStageRtItem = (rt: ResponsavelTecnicoCanonico) => {
+    setStagedRtId(rt.id);
+    setRtQuery('');
+    setNewArtInput('');
+    onSelectRT?.(rt);
+  };
+
+  const handleSaveNewArt = async () => {
+    if (!stagedRt) return;
+    const cleanArt = newArtInput.trim();
+    if (!cleanArt) {
+      toast.error('Digite o número da nova ART para salvar e vincular.');
+      return;
+    }
+
+    setSavingArt(true);
+    try {
+      const targetBarragemNome =
+        nomeBarragem?.trim() || selectedBarragem?.nomeBarragem || undefined;
+      const targetEmpreendedorNome = selectedEmpreendedor?.nome || undefined;
+      const res = await linkArtToRT({
+        rtId: stagedRt.id,
+        rtNome: stagedRt.nome,
+        registroProfissional: stagedRt.registroProfissional,
+        formacaoProfissional: stagedRt.formacaoProfissional,
+        cpf: stagedRt.cpf,
+        art: cleanArt,
+        barragemId: selectedBarragemId || undefined,
+        barragemNome: targetBarragemNome,
+        empreendedorId: selectedEmpreendedorId || undefined,
+        empreendedorNome: targetEmpreendedorNome,
+      });
+      if (!res.success || !res.data) {
+        throw new Error(res.message || 'Erro ao salvar ART no Administra.');
+      }
+      const updatedRt = res.data;
+      setStagedRtId(updatedRt.id);
+      setNewArtInput('');
+      onSelectRT?.(updatedRt, cleanArt);
+      toast.success(`ART ${cleanArt} salva no Administra e vinculada a ${updatedRt.nome}!`);
+    } catch (error: any) {
+      toast.error(error?.message || 'Erro ao salvar ART no Administra.');
+    } finally {
+      setSavingArt(false);
+    }
+  };
+
   return (
-    <div className="rounded-3xl border-2 border-emerald-200/80 bg-gradient-to-br from-emerald-50/70 via-white to-slate-50 p-5 md:p-6 space-y-5 shadow-sm">
+    <div className="rounded-2xl sm:rounded-3xl border-2 border-emerald-200/80 bg-gradient-to-br from-emerald-50/70 via-white to-slate-50 p-3.5 sm:p-5 md:p-6 space-y-4 sm:space-y-5 shadow-sm">
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-emerald-100 pb-3.5">
         <div className="flex items-center gap-3">
@@ -275,7 +403,20 @@ export const AdministraEntityPicker: React.FC<AdministraEntityPickerProps> = ({
           </div>
         </div>
 
-        <div className="flex items-center gap-2 self-start sm:self-auto">
+        <div className="flex flex-wrap items-center gap-2 self-start sm:self-auto">
+          {!readOnly && onSaveToAdministra && (
+            <button
+              type="button"
+              disabled={loading || refreshing || savingToAdministra}
+              onClick={onSaveToAdministra}
+              className="px-3 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-[11px] font-bold flex items-center gap-1.5 transition-colors shadow-xs disabled:opacity-50 cursor-pointer"
+              title="Salvar ou atualizar Empreendedor, Barragem e RT diretamente no Administra"
+            >
+              {savingToAdministra ? <Loader2 size={12} className="animate-spin" /> : <Save size={12} />}
+              {selectedEmpreendedorId || selectedBarragemId ? 'Atualizar no Administra' : 'Salvar no Administra'}
+            </button>
+          )}
+
           {!readOnly && (
             <button
               type="button"
@@ -309,7 +450,7 @@ export const AdministraEntityPicker: React.FC<AdministraEntityPickerProps> = ({
 
       {/* Pickers */}
       {!readOnly && (
-        <div className={`grid grid-cols-1 ${onSelectRT ? 'md:grid-cols-3' : 'md:grid-cols-2'} gap-4`}>
+        <div className="grid grid-cols-1 gap-4">
           {/* Empreendedor Picker */}
           <div className="space-y-1.5 relative">
             <label className="text-[10px] font-black uppercase tracking-widest text-slate-600 flex items-center gap-1.5">
@@ -337,7 +478,7 @@ export const AdministraEntityPicker: React.FC<AdministraEntityPickerProps> = ({
             </div>
 
             {empQuery.trim().length > 0 && (
-              <div className="rounded-xl border border-emerald-300 bg-white shadow-lg max-h-56 overflow-y-auto divide-y divide-slate-100">
+              <div className="rounded-xl border border-emerald-300 bg-white shadow-lg max-h-72 overflow-y-auto divide-y divide-slate-100">
                 {filteredEmpreendedores.length === 0 ? (
                   <p className="p-3 text-xs text-slate-500">
                     Nenhum empreendedor encontrado para "{empQuery}". Você pode preencher manualmente nos campos abaixo.
@@ -348,17 +489,17 @@ export const AdministraEntityPicker: React.FC<AdministraEntityPickerProps> = ({
                       key={emp.id}
                       type="button"
                       onClick={() => handleSelectEmpItem(emp)}
-                      className="w-full text-left px-3 py-2.5 hover:bg-emerald-50 transition-colors flex items-center justify-between gap-2 cursor-pointer"
+                      className="w-full text-left px-4 py-3 hover:bg-emerald-50 transition-colors flex items-center justify-between gap-3 cursor-pointer"
                     >
-                      <div className="min-w-0">
-                        <p className="text-xs font-black text-slate-900 truncate">{emp.nome}</p>
-                        <p className="text-[10px] font-semibold text-slate-500 truncate">
+                      <div className="min-w-0 flex-1 space-y-0.5">
+                        <p className="text-xs sm:text-sm font-black text-slate-900 break-words">{emp.nome}</p>
+                        <p className="text-[11px] font-semibold text-slate-600 break-words">
                           {emp.cpfCnpj || 'S/Doc'}
                           {emp.carMt ? ` • CAR: ${emp.carMt}` : ''}
-                          {emp.municipio ? ` • ${emp.municipio}` : ''}
+                          {emp.municipio ? ` • ${emp.municipio}/${emp.uf || 'MT'}` : ''}
                         </p>
                       </div>
-                      <span className="shrink-0 px-2 py-1 rounded-lg bg-emerald-600 text-white text-[10px] font-black uppercase">
+                      <span className="shrink-0 px-3 py-1.5 rounded-lg bg-emerald-600 text-white text-[10px] font-black uppercase">
                         Usar
                       </span>
                     </button>
@@ -416,7 +557,7 @@ export const AdministraEntityPicker: React.FC<AdministraEntityPickerProps> = ({
             </div>
 
             {barQuery.trim().length > 0 && (
-              <div className="rounded-xl border border-emerald-300 bg-white shadow-lg max-h-56 overflow-y-auto divide-y divide-slate-100">
+              <div className="rounded-xl border border-emerald-300 bg-white shadow-lg max-h-72 overflow-y-auto divide-y divide-slate-100">
                 {filteredBarragens.length === 0 ? (
                   <p className="p-3 text-xs text-slate-500">
                     Nenhuma barragem encontrada para "{barQuery}".
@@ -430,17 +571,17 @@ export const AdministraEntityPicker: React.FC<AdministraEntityPickerProps> = ({
                         onSelectBarragem(bar);
                         setBarQuery('');
                       }}
-                      className="w-full text-left px-3 py-2.5 hover:bg-emerald-50 transition-colors flex items-center justify-between gap-2 cursor-pointer"
+                      className="w-full text-left px-4 py-3 hover:bg-emerald-50 transition-colors flex items-center justify-between gap-3 cursor-pointer"
                     >
-                      <div className="min-w-0">
-                        <p className="text-xs font-black text-slate-900 truncate">{bar.nomeBarragem}</p>
-                        <p className="text-[10px] font-semibold text-slate-500 truncate">
+                      <div className="min-w-0 flex-1 space-y-0.5">
+                        <p className="text-xs sm:text-sm font-black text-slate-900 break-words">{bar.nomeBarragem}</p>
+                        <p className="text-[11px] font-semibold text-slate-600 break-words">
                           {bar.municipio || 'MT'}
                           {bar.codigoSnisb ? ` • SNISB: ${bar.codigoSnisb}` : ''}
                           {bar.empreendedorNome ? ` • ${bar.empreendedorNome}` : ''}
                         </p>
                       </div>
-                      <span className="shrink-0 px-2 py-1 rounded-lg bg-emerald-600 text-white text-[10px] font-black uppercase">
+                      <span className="shrink-0 px-3 py-1.5 rounded-lg bg-emerald-600 text-white text-[10px] font-black uppercase">
                         Usar
                       </span>
                     </button>
@@ -473,7 +614,7 @@ export const AdministraEntityPicker: React.FC<AdministraEntityPickerProps> = ({
 
           {/* RT Picker */}
           {onSelectRT && (
-            <div className="space-y-1.5 relative">
+            <div className="space-y-2 relative">
               <label className="text-[10px] font-black uppercase tracking-widest text-slate-600 flex items-center gap-1.5">
                 <UserCheck size={12} className="text-emerald-600" /> Vincular RT da Base
               </label>
@@ -483,7 +624,7 @@ export const AdministraEntityPicker: React.FC<AdministraEntityPickerProps> = ({
                   type="text"
                   value={rtQuery}
                   onChange={(e) => setRtQuery(e.target.value)}
-                  placeholder="Filtrar RT, CREA ou CPF..."
+                  placeholder="Filtrar RT, CREA, CPF ou ART..."
                   className="w-full pl-8 pr-8 py-2 bg-white border border-slate-300 rounded-t-xl text-xs font-semibold text-slate-700 focus:border-emerald-600 outline-none"
                 />
                 {rtQuery && (
@@ -497,65 +638,287 @@ export const AdministraEntityPicker: React.FC<AdministraEntityPickerProps> = ({
                   </button>
                 )}
               </div>
+              {rtQuery.trim().length > 0 && (
+                <div className="rounded-xl border border-emerald-300 bg-white shadow-lg max-h-72 overflow-y-auto divide-y divide-slate-100">
+                  {filteredRTs.length === 0 ? (
+                    <p className="p-3 text-xs text-slate-500">
+                      Nenhum RT encontrado para "{rtQuery}". Preencha manualmente abaixo para cadastrar no Administra.
+                    </p>
+                  ) : (
+                    filteredRTs.map((rt) => (
+                      <button
+                        key={rt.id}
+                        type="button"
+                        onClick={() => handleStageRtItem(rt)}
+                        className="w-full text-left px-4 py-3 hover:bg-emerald-50 transition-colors flex items-center justify-between gap-3 cursor-pointer"
+                      >
+                        <div className="min-w-0 flex-1 space-y-0.5">
+                          <p className="text-xs sm:text-sm font-black text-slate-900 break-words">{rt.nome}</p>
+                          <p className="text-[11px] font-semibold text-slate-600 break-words">
+                            {rt.registroProfissional || 'Sem CREA/Registro'}
+                            {rt.cpf ? ` • CPF: ${rt.cpf}` : ''}
+                            {rt.formacaoProfissional ? ` • ${rt.formacaoProfissional}` : ''}
+                            {rt.art ? ` • ART: ${rt.art}` : ''}
+                            {rt.artsVinculadas && rt.artsVinculadas.length > 0
+                              ? ` (${rt.artsVinculadas.length} ART${rt.artsVinculadas.length > 1 ? 's' : ''} no Administra)`
+                              : ''}
+                          </p>
+                        </div>
+                        <span className="shrink-0 px-3 py-1.5 rounded-lg bg-emerald-600 text-white text-[10px] font-black uppercase">
+                          Selecionar
+                        </span>
+                      </button>
+                    ))
+                  )}
+                </div>
+              )}
+
               <select
-                defaultValue=""
+                value={stagedRtId}
                 onChange={(e) => {
-                  const found = responsaveisTecnicos.find((rt) => rt.id === e.target.value);
+                  const found = allResponsaveisTecnicos.find((rt) => rt.id === e.target.value);
                   if (found) {
-                    onSelectRT(found);
-                    e.target.value = '';
+                    handleStageRtItem(found);
+                  } else {
+                    setStagedRtId('');
+                    setNewArtInput('');
                   }
                 }}
                 className="w-full px-3 py-2 bg-white border border-t-0 border-slate-300 rounded-b-xl text-xs font-bold text-slate-800 focus:border-emerald-600 outline-none"
               >
                 <option value="">
-                  {responsaveisTecnicos.length === 0
+                  {allResponsaveisTecnicos.length === 0
                     ? 'Nenhum RT na base ainda'
-                    : `-- Adicionar RT ao documento (${filteredRTs.length}) --`}
+                    : `-- Escolher RT e vincular/cadastrar ART (${filteredRTs.length}) --`}
                 </option>
                 {filteredRTs.map((rt) => (
                   <option key={rt.id} value={rt.id}>
-                    {rt.nome} {rt.registroProfissional ? `(${rt.registroProfissional})` : ''} [
+                    {rt.nome} {rt.registroProfissional ? `(${rt.registroProfissional})` : ''}
+                    {rt.art ? ` • ART: ${rt.art}` : ''} [
                     {ECOSYSTEM_SYSTEM_LABELS[rt.sourceSystem].shortName}]
                   </option>
                 ))}
               </select>
+
+              {stagedRt && (
+                <div className="rounded-2xl border border-emerald-200 bg-white p-4 space-y-3 shadow-xs">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="space-y-0.5 min-w-0">
+                      <p className="text-[10px] font-black uppercase tracking-widest text-emerald-700">
+                        RT Selecionado para Vínculo de ART
+                      </p>
+                      <p className="text-sm font-black text-slate-900 break-words">{stagedRt.nome}</p>
+                      <p className="text-[11px] font-semibold text-slate-600 break-words">
+                        {stagedRt.registroProfissional || 'Sem CREA/Registro'}
+                        {stagedRt.cpf ? ` • CPF: ${stagedRt.cpf}` : ''}
+                        {stagedRt.formacaoProfissional ? ` • ${stagedRt.formacaoProfissional}` : ''}
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setStagedRtId('');
+                        setNewArtInput('');
+                      }}
+                      className="p-1.5 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition-colors cursor-pointer shrink-0"
+                      aria-label="Fechar vínculo de ART"
+                    >
+                      <X size={14} />
+                    </button>
+                  </div>
+
+                  {stagedRtArts.length > 0 && (
+                    <div className="space-y-1.5">
+                      <p className="text-[10px] font-black uppercase tracking-widest text-slate-500">
+                        ARTs já salvas no Administra (clique para usar)
+                      </p>
+                      <div className="flex flex-wrap gap-2">
+                        {stagedRtArts.map((entry) => (
+                          <button
+                            key={entry.art}
+                            type="button"
+                            onClick={() => {
+                              onSelectRT(stagedRt, entry.art);
+                              toast.success(`ART ${entry.art} aplicada ao documento.`);
+                            }}
+                            className="px-3 py-1.5 rounded-xl border border-emerald-200 bg-emerald-50 hover:bg-emerald-100 text-emerald-900 text-xs font-bold flex flex-col items-start transition-colors cursor-pointer text-left"
+                          >
+                            <span>ART: {entry.art}</span>
+                            {(entry.barragemNome || entry.empreendedorNome) && (
+                              <span className="text-[10px] font-medium text-emerald-700">
+                                {[entry.barragemNome, entry.empreendedorNome].filter(Boolean).join(' • ')}
+                              </span>
+                            )}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  <div className="pt-2 border-t border-slate-100 space-y-2">
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1">
+                      <label className="text-[10px] font-black uppercase tracking-widest text-slate-600">
+                        Cadastrar Nova ART no Administra
+                      </label>
+                      <span className="text-[10px] font-semibold text-slate-500">
+                        Empreendimento:{' '}
+                        <strong className="text-slate-700">
+                          {nomeBarragem?.trim() ||
+                            selectedBarragem?.nomeBarragem ||
+                            selectedEmpreendedor?.nome ||
+                            'Vínculo do documento atual'}
+                        </strong>
+                      </span>
+                    </div>
+                    <div className="flex flex-col sm:flex-row gap-2">
+                      <input
+                        type="text"
+                        value={newArtInput}
+                        onChange={(e) => setNewArtInput(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') {
+                            e.preventDefault();
+                            void handleSaveNewArt();
+                          }
+                        }}
+                        placeholder="Digite a nova ART (ex.: MT20260012345)..."
+                        className="flex-1 px-3 py-2 bg-slate-50 border border-slate-300 rounded-xl text-xs font-semibold text-slate-800 focus:border-emerald-600 focus:bg-white outline-none"
+                      />
+                      <button
+                        type="button"
+                        disabled={savingArt || !newArtInput.trim()}
+                        onClick={() => void handleSaveNewArt()}
+                        className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-black flex items-center justify-center gap-1.5 transition-colors disabled:opacity-50 cursor-pointer shrink-0"
+                      >
+                        {savingArt ? (
+                          <Loader2 size={14} className="animate-spin" />
+                        ) : (
+                          <PlusCircle size={14} />
+                        )}
+                        Salvar ART no Administra e Vincular
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
             </div>
           )}
         </div>
       )}
 
-      {/* Selected entities + Editable confirmation */}
-      {(selectedEmpreendedor || selectedBarragem) && (
+      {/* Selected entities + Register pending entities */}
+      <div className="flex flex-col gap-2.5">
         <div className="flex flex-wrap items-center gap-2">
-          {selectedEmpreendedor && (
+          {selectedEmpreendedor ? (
             <div className="flex items-center gap-2 px-3 py-1.5 rounded-xl text-xs font-bold border bg-emerald-50 border-emerald-200 text-emerald-800">
-              <CheckCircle2 size={14} className="text-emerald-600" />
+              <CheckCircle2 size={14} className="text-emerald-600 shrink-0" />
               <span>
-                Empreendedor ({selectedEmpreendedor.nome}) • Origem:{' '}
+                Empreendedor vinculado no Administra ({selectedEmpreendedor.nome}) • Origem:{' '}
                 <strong>{ECOSYSTEM_SYSTEM_LABELS[selectedEmpreendedor.sourceSystem].shortName}</strong>
               </span>
             </div>
+          ) : (
+            !readOnly && (
+              <div className="flex flex-wrap items-center justify-between gap-2 w-full sm:w-auto px-3 py-2 rounded-xl text-[11px] font-bold border bg-amber-50 border-amber-200 text-amber-900">
+                <div className="flex items-center gap-2">
+                  <Database size={13} className="text-amber-600 shrink-0" />
+                  <span>
+                    Empreendedor não vinculado — salvo apenas no rascunho local até cadastrar no Administra.
+                  </span>
+                </div>
+                {onRegisterEmpreendedor && hasPendingEmpreendedor && (
+                  <button
+                    type="button"
+                    disabled={registeringEntity !== null}
+                    onClick={() => void onRegisterEmpreendedor()}
+                    className="px-3 py-1.5 rounded-lg bg-amber-600 hover:bg-amber-700 text-white text-[11px] font-black flex items-center gap-1.5 transition-colors cursor-pointer disabled:opacity-50 shrink-0"
+                  >
+                    {registeringEntity === 'empreendedor' ? (
+                      <Loader2 size={12} className="animate-spin" />
+                    ) : (
+                      <PlusCircle size={12} />
+                    )}
+                    Cadastrar Empreendedor na Base de Dados
+                  </button>
+                )}
+              </div>
+            )
           )}
 
-          {selectedBarragem && (
+          {selectedBarragem && !hasPendingBarragem ? (
             <div className="flex items-center gap-2 px-3 py-1.5 rounded-xl text-xs font-bold border bg-emerald-50 border-emerald-200 text-emerald-800">
-              <CheckCircle2 size={14} className="text-emerald-600" />
+              <CheckCircle2 size={14} className="text-emerald-600 shrink-0" />
               <span>
-                Barragem ({selectedBarragem.nomeBarragem}) • Origem:{' '}
+                Barragem vinculada no Administra ({selectedBarragem.nomeBarragem})
+                {typeof barragemCount === 'number' && barragemCount > 1 ? ` (${barragemCount} no documento)` : ''} • Origem:{' '}
                 <strong>{ECOSYSTEM_SYSTEM_LABELS[selectedBarragem.sourceSystem].shortName}</strong>
               </span>
+            </div>
+          ) : (
+            !readOnly && (
+              <div className="flex flex-wrap items-center justify-between gap-2 w-full sm:w-auto px-3 py-2 rounded-xl text-[11px] font-bold border bg-amber-50 border-amber-200 text-amber-900">
+                <div className="flex items-center gap-2">
+                  <Waves size={13} className="text-amber-600 shrink-0" />
+                  <span>
+                    {typeof barragemCount === 'number' && barragemCount > 1
+                      ? 'Existem barragens pendentes de cadastro na base Administra.'
+                      : 'Barragem não vinculada — temporária no rascunho até cadastrar na base.'}
+                  </span>
+                </div>
+                {onRegisterBarragem && hasPendingBarragem && (
+                  <button
+                    type="button"
+                    disabled={registeringEntity !== null}
+                    onClick={() => void onRegisterBarragem()}
+                    className="px-3 py-1.5 rounded-lg bg-amber-600 hover:bg-amber-700 text-white text-[11px] font-black flex items-center gap-1.5 transition-colors cursor-pointer disabled:opacity-50 shrink-0"
+                  >
+                    {registeringEntity === 'barragem' ? (
+                      <Loader2 size={12} className="animate-spin" />
+                    ) : (
+                      <PlusCircle size={12} />
+                    )}
+                    Cadastrar Barragem na Base de Dados
+                  </button>
+                )}
+              </div>
+            )
+          )}
+
+          {!readOnly && hasPendingRT && (
+            <div className="flex flex-wrap items-center justify-between gap-2 w-full sm:w-auto px-3 py-2 rounded-xl text-[11px] font-bold border bg-amber-50 border-amber-200 text-amber-900">
+              <div className="flex items-center gap-2">
+                <UserCheck size={13} className="text-amber-600 shrink-0" />
+                <span>
+                  RT(s) pendente(s) no Administra
+                  {unregisteredRtNames.length > 0 ? `: ${unregisteredRtNames.join(', ')}` : ''}.
+                </span>
+              </div>
+              {onRegisterRT && (
+                <button
+                  type="button"
+                  disabled={registeringEntity !== null}
+                  onClick={() => void onRegisterRT()}
+                  className="px-3 py-1.5 rounded-lg bg-amber-600 hover:bg-amber-700 text-white text-[11px] font-black flex items-center gap-1.5 transition-colors cursor-pointer disabled:opacity-50 shrink-0"
+                >
+                  {registeringEntity === 'rt' ? (
+                    <Loader2 size={12} className="animate-spin" />
+                  ) : (
+                    <PlusCircle size={12} />
+                  )}
+                  Cadastrar Responsável Técnico na Base de Dados
+                </button>
+              )}
             </div>
           )}
 
           {!readOnly && (
             <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-[11px] font-bold bg-blue-50 border border-blue-200 text-blue-800">
-              <PencilLine size={13} className="text-blue-600" />
-              Campos editáveis: qualquer alteração feita no formulário será salva na versão atualizada.
+              <PencilLine size={13} className="text-blue-600 shrink-0" />
+              Rascunho preserva dados locais; para concluir, todos os dados usados devem estar cadastrados no Administra.
             </span>
           )}
         </div>
-      )}
+      </div>
 
       {/* Optional cross-system request shortcut if originating outside Notifica */}
       {externalLinkedRecords.length > 0 && !readOnly && (

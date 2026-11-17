@@ -1,4 +1,5 @@
 import {
+  ArtVinculoCanonico,
   BarragemCanonica,
   CURRENT_SYSTEM_ID,
   EmpreendedorCanonico,
@@ -8,6 +9,7 @@ import {
   AdministraRegistryRepository,
   FormEntitySyncInput,
   FormEntitySyncResult,
+  LinkArtRTInput,
 } from './types';
 import {
   assertSafeId,
@@ -71,33 +73,41 @@ function mergeByKey<T extends { id: string; updatedAt?: string }>(
   secondaryKeyFn?: (item: T) => string
 ): T[] {
   const byId = new Map<string, T>();
-  const secondaryToId = new Map<string, string>();
+  const secondaryToLocalId = new Map<string, string>();
 
-  const insert = (item: T) => {
+  for (const item of localItems) {
+    byId.set(item.id, item);
     const secKey = secondaryKeyFn ? secondaryKeyFn(item) : '';
-    const existingId = byId.has(item.id)
-      ? item.id
-      : secKey && secondaryToId.has(secKey)
-        ? secondaryToId.get(secKey)!
-        : item.id;
+    if (secKey && !secondaryToLocalId.has(secKey)) {
+      secondaryToLocalId.set(secKey, item.id);
+    }
+  }
 
-    const current = byId.get(existingId);
-    if (!current) {
-      byId.set(existingId, item);
-      if (secKey) secondaryToId.set(secKey, existingId);
-      return;
+  for (const item of remoteItems) {
+    const secKey = secondaryKeyFn ? secondaryKeyFn(item) : '';
+    const existingById = byId.get(item.id);
+    if (existingById) {
+      const currentTs = new Date(existingById.updatedAt || 0).getTime();
+      const nextTs = new Date(item.updatedAt || 0).getTime();
+      if (nextTs >= currentTs) {
+        byId.set(item.id, { ...existingById, ...item, id: item.id });
+      }
+      continue;
     }
 
-    const currentTs = new Date(current.updatedAt || 0).getTime();
-    const nextTs = new Date(item.updatedAt || 0).getTime();
-    if (nextTs >= currentTs) {
-      byId.set(existingId, { ...current, ...item, id: existingId });
-      if (secKey) secondaryToId.set(secKey, existingId);
+    const isLocalTempId = (id: string) => /^(emp|bar|rt)_\d+_/i.test(id);
+    const matchedLocalId = secKey ? secondaryToLocalId.get(secKey) : undefined;
+    if (matchedLocalId && isLocalTempId(matchedLocalId)) {
+      const current = byId.get(matchedLocalId)!;
+      byId.delete(matchedLocalId);
+      byId.set(item.id, { ...current, ...item, id: item.id });
+      if (secKey) secondaryToLocalId.delete(secKey);
+      continue;
     }
-  };
 
-  localItems.forEach(insert);
-  remoteItems.forEach(insert);
+    byId.set(item.id, item);
+  }
+
   return Array.from(byId.values());
 }
 
@@ -168,7 +178,22 @@ async function syncRemoteItem<T>(path: string, item: T): Promise<T> {
   return item;
 }
 
+async function deleteRemoteItem(path: string): Promise<void> {
+  if (typeof window === 'undefined' || (typeof navigator !== 'undefined' && !navigator.onLine)) {
+    return;
+  }
+  try {
+    await fetch(path, { method: 'DELETE' });
+  } catch {
+    // Ignore network error during remote delete fallback
+  }
+}
+
 export class LocalAdministraRepository implements AdministraRegistryRepository {
+  invalidateCache(): void {
+    lastBootstrapResult = null;
+  }
+
   async getEmpreendedores(): Promise<EmpreendedorCanonico[]> {
     const local = readList<EmpreendedorCanonico>(ADMINISTRA_STORAGE_KEYS.EMPREENDEDORES);
     const remote = await fetchRemoteBootstrap();
@@ -239,6 +264,7 @@ export class LocalAdministraRepository implements AdministraRegistryRepository {
     const synced = await syncRemoteItem('/api/registry/empreendedores', savedLocal);
     const updatedList = [synced, ...current.filter((item) => item.id !== id)];
     writeList(ADMINISTRA_STORAGE_KEYS.EMPREENDEDORES, updatedList);
+    lastBootstrapResult = null;
     return synced;
   }
 
@@ -258,6 +284,7 @@ export class LocalAdministraRepository implements AdministraRegistryRepository {
       ADMINISTRA_STORAGE_KEYS.EMPREENDEDORES,
       current.filter((e) => e.id !== safeId)
     );
+    await deleteRemoteItem(`/api/registry/empreendedores/${encodeURIComponent(safeId)}`);
   }
 
   async getBarragens(): Promise<BarragemCanonica[]> {
@@ -331,6 +358,7 @@ export class LocalAdministraRepository implements AdministraRegistryRepository {
       synced,
       ...current.filter((item) => item.id !== id),
     ]);
+    lastBootstrapResult = null;
     return synced;
   }
 
@@ -350,6 +378,7 @@ export class LocalAdministraRepository implements AdministraRegistryRepository {
       ADMINISTRA_STORAGE_KEYS.BARRAGENS,
       current.filter((b) => b.id !== safeId)
     );
+    await deleteRemoteItem(`/api/registry/barragens/${encodeURIComponent(safeId)}`);
   }
 
   async getResponsaveisTecnicos(): Promise<ResponsavelTecnicoCanonico[]> {
@@ -412,7 +441,103 @@ export class LocalAdministraRepository implements AdministraRegistryRepository {
 
     const synced = await syncRemoteItem('/api/registry/rts', savedLocal);
     writeList(ADMINISTRA_STORAGE_KEYS.RTS, [synced, ...current.filter((item) => item.id !== id)]);
+    lastBootstrapResult = null;
     return synced;
+  }
+
+  async linkArtToRT(input: LinkArtRTInput): Promise<ResponsavelTecnicoCanonico> {
+    const now = new Date().toISOString();
+    const clean = sanitizeObject(stripSensitiveFields(input));
+    const art = String(clean.art || '').trim();
+    const rtNome = String(clean.rtNome || '').trim();
+    if (!art || !rtNome) {
+      throw new Error('Informe o Responsável Técnico e o número da ART.');
+    }
+
+    const current = await this.getResponsaveisTecnicos();
+    const existing =
+      (clean.rtId ? current.find((r) => r.id === clean.rtId) : undefined) ||
+      current.find((r) => normalizeSearchText(r.nome) === normalizeSearchText(rtNome));
+
+    const rtId = existing?.id || clean.rtId || generateId('rt');
+    const newArtEntry: ArtVinculoCanonico = {
+      id: `rt_art_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+      art,
+      barragemId: clean.barragemId,
+      barragemNome: clean.barragemNome,
+      empreendedorId: clean.empreendedorId,
+      empreendedorNome: clean.empreendedorNome,
+      processo: clean.processo,
+      situacao: 'ativo',
+      createdAt: now,
+    };
+
+    const existingArts = Array.isArray(existing?.artsVinculadas) ? existing.artsVinculadas : [];
+    const mergedArts = [
+      newArtEntry,
+      ...existingArts.filter(
+        (a) => !(a.art === art && (a.barragemId || '') === (clean.barragemId || ''))
+      ),
+    ];
+
+    const localRt: ResponsavelTecnicoCanonico = {
+      ...(existing || {
+        id: rtId,
+        nome: rtNome,
+        sourceSystem: CURRENT_SYSTEM_ID,
+        registryOwnerSystem: 'ADMINISTRA',
+        createdAt: now,
+        updatedAt: now,
+      }),
+      id: rtId,
+      nome: rtNome,
+      registroProfissional: clean.registroProfissional || existing?.registroProfissional,
+      formacaoProfissional: clean.formacaoProfissional || existing?.formacaoProfissional,
+      cpf: clean.cpf || existing?.cpf,
+      art,
+      artsVinculadas: mergedArts,
+      updatedAt: now,
+    };
+
+    const syncedRemote = await syncRemoteItem<ResponsavelTecnicoCanonico>('/api/registry/rts/link-art', {
+      rtId,
+      rtNome,
+      registroProfissional: localRt.registroProfissional,
+      formacaoProfissional: localRt.formacaoProfissional,
+      cpf: localRt.cpf,
+      art,
+      barragemId: clean.barragemId,
+      barragemNome: clean.barragemNome,
+      empreendedorId: clean.empreendedorId,
+      empreendedorNome: clean.empreendedorNome,
+      processo: clean.processo,
+    } as unknown as ResponsavelTecnicoCanonico);
+
+    const finalRt: ResponsavelTecnicoCanonico =
+      syncedRemote && (syncedRemote as any).id
+        ? {
+            ...localRt,
+            ...syncedRemote,
+            art,
+            artsVinculadas: [
+              ...(Array.isArray(syncedRemote.artsVinculadas) ? syncedRemote.artsVinculadas : []),
+              ...mergedArts.filter(
+                (m) =>
+                  !(syncedRemote.artsVinculadas || []).some(
+                    (s) => s.art === m.art && (s.barragemId || '') === (m.barragemId || '')
+                  )
+              ),
+            ],
+          }
+        : localRt;
+
+    const latestList = readList<ResponsavelTecnicoCanonico>(ADMINISTRA_STORAGE_KEYS.RTS);
+    writeList(ADMINISTRA_STORAGE_KEYS.RTS, [
+      finalRt,
+      ...latestList.filter((item) => item.id !== finalRt.id && item.id !== rtId),
+    ]);
+    lastBootstrapResult = null;
+    return finalRt;
   }
 
   async deleteResponsavelTecnico(id: string): Promise<void> {
@@ -431,20 +556,27 @@ export class LocalAdministraRepository implements AdministraRegistryRepository {
       ADMINISTRA_STORAGE_KEYS.RTS,
       current.filter((rt) => rt.id !== safeId)
     );
+    await deleteRemoteItem(`/api/registry/responsaveis_tecnicos/${encodeURIComponent(safeId)}`);
   }
 
   async syncFromFormSubmission(input: FormEntitySyncInput): Promise<FormEntitySyncResult> {
     const clean = sanitizeObject(stripSensitiveFields(input));
     let empreendedorId = clean.existingEmpreendedorId;
-    let barragemId = clean.existingBarragemId;
+    const barragemIds: string[] = [];
     const responsavelTecnicoIds: string[] = [];
 
     let createdEmpreendedor = false;
-    let createdBarragem = false;
+    let createdBarragemCount = 0;
     let createdRTCount = 0;
 
-    // 1. Empreendedor
-    const empreendedores = readList<EmpreendedorCanonico>(ADMINISTRA_STORAGE_KEYS.EMPREENDEDORES);
+    // Ensure local cache is hydrated with remote records before deduplicating
+    const [empreendedores, barragens, rtsList] = await Promise.all([
+      this.getEmpreendedores(),
+      this.getBarragens(),
+      this.getResponsaveisTecnicos(),
+    ]);
+
+    // 1. Empreendedor (create or update)
     const cpfCnpjNorm = normalizeDocumentNumber(clean.cpfCnpj || '');
     const empNomeNorm = normalizeSearchText(clean.empreendedorNome);
     const carNorm = normalizeCarCode(clean.carMt);
@@ -465,8 +597,7 @@ export class LocalAdministraRepository implements AdministraRegistryRepository {
 
     if (matchedEmp) {
       empreendedorId = matchedEmp.id;
-      // Persist edited fields from form when user edited pre-filled or matched entrepreneur
-      const editedEmp = await this.saveEmpreendedor(
+      matchedEmp = await this.saveEmpreendedor(
         {
           ...matchedEmp,
           id: matchedEmp.id,
@@ -487,7 +618,6 @@ export class LocalAdministraRepository implements AdministraRegistryRepository {
         },
         { allowEditFromForm: true }
       );
-      matchedEmp = editedEmp;
     } else if (clean.empreendedorNome && clean.empreendedorNome.trim().length > 1) {
       const created = await this.saveEmpreendedor(
         {
@@ -513,109 +643,186 @@ export class LocalAdministraRepository implements AdministraRegistryRepository {
       createdEmpreendedor = true;
     }
 
-    // 2. Barragem
-    const barragens = readList<BarragemCanonica>(ADMINISTRA_STORAGE_KEYS.BARRAGENS);
-    const snisbNorm = normalizeSearchText(clean.codigoSnisb);
-    const barNomeNorm = normalizeSearchText(clean.nomeBarragem);
+    // 2. Barragem(ns) — supports single barragem OR multiple barragens (Notificação)
+    const barragensQueue =
+      Array.isArray(clean.barragens) && clean.barragens.length > 0
+        ? clean.barragens
+        : [
+            {
+              existingBarragemId: clean.existingBarragemId,
+              nomeBarragem: clean.nomeBarragem || '',
+              codigoSnisb: clean.codigoSnisb,
+              municipio: clean.municipio,
+              usoPreponderante: clean.usoPreponderante,
+              tipoBarragem: clean.tipoBarragem,
+              coordenadasGMS: clean.coordenadasGMS,
+              altura: clean.altura,
+              volume: clean.volume,
+            },
+          ];
 
-    let matchedBarragem = barragemId ? barragens.find((b) => b.id === barragemId) : undefined;
-    if (!matchedBarragem && snisbNorm) {
-      matchedBarragem = barragens.find((b) => normalizeSearchText(b.codigoSnisb) === snisbNorm);
-    }
-    if (!matchedBarragem && barNomeNorm) {
-      matchedBarragem = barragens.find(
-        (b) =>
-          normalizeSearchText(b.nomeBarragem) === barNomeNorm &&
-          (!empreendedorId || !b.empreendedorId || b.empreendedorId === empreendedorId)
+    const workingBarragens = [...barragens];
+
+    for (let idx = 0; idx < barragensQueue.length; idx++) {
+      const barInput = barragensQueue[idx];
+      const snisbNorm = normalizeSearchText(barInput.codigoSnisb);
+      const barNomeTrim = (barInput.nomeBarragem || '').trim();
+      const barNomeNorm = normalizeSearchText(barNomeTrim);
+      const hasCoords = Boolean(
+        barInput.coordenadasGMS?.lat?.g ||
+          barInput.coordenadasGMS?.long?.g ||
+          barInput.coordenadasGMS?.lat?.m ||
+          barInput.coordenadasGMS?.long?.m
       );
+
+      if (!barNomeTrim && !snisbNorm && !hasCoords && !barInput.existingBarragemId) {
+        continue;
+      }
+
+      let matchedBar = barInput.existingBarragemId
+        ? workingBarragens.find((b) => b.id === barInput.existingBarragemId)
+        : undefined;
+
+      if (!matchedBar && snisbNorm) {
+        matchedBar = workingBarragens.find((b) => normalizeSearchText(b.codigoSnisb) === snisbNorm);
+      }
+
+      if (!matchedBar && barNomeNorm) {
+        matchedBar = workingBarragens.find(
+          (b) =>
+            normalizeSearchText(b.nomeBarragem) === barNomeNorm &&
+            (!empreendedorId || !b.empreendedorId || b.empreendedorId === empreendedorId)
+        );
+      }
+
+      if (!matchedBar && hasCoords && empreendedorId) {
+        matchedBar = workingBarragens.find(
+          (b) =>
+            b.empreendedorId === empreendedorId &&
+            b.coordenadasGMS?.lat?.g === barInput.coordenadasGMS?.lat?.g &&
+            b.coordenadasGMS?.lat?.m === barInput.coordenadasGMS?.lat?.m &&
+            b.coordenadasGMS?.long?.g === barInput.coordenadasGMS?.long?.g &&
+            b.coordenadasGMS?.long?.m === barInput.coordenadasGMS?.long?.m
+        );
+      }
+
+      const resolvedName =
+        barNomeTrim ||
+        (clean.nomeBarragem && barragensQueue.length === 1 ? clean.nomeBarragem.trim() : '') ||
+        (clean.nomeBarragem ? `${clean.nomeBarragem.trim()} - Barragem ${idx + 1}` : '') ||
+        (barInput.codigoSnisb ? `Barragem (${barInput.codigoSnisb})` : '') ||
+        `Barragem ${idx + 1}${matchedEmp?.nome ? ` - ${matchedEmp.nome}` : ''}`;
+
+      if (matchedBar) {
+        const savedBar = await this.saveBarragem(
+          {
+            ...matchedBar,
+            id: matchedBar.id,
+            empreendedorId: empreendedorId || matchedBar.empreendedorId || '',
+            empreendedorNome: matchedEmp?.nome || clean.empreendedorNome || matchedBar.empreendedorNome,
+            empreendedorCpfCnpj:
+              matchedEmp?.cpfCnpj || clean.cpfCnpj || matchedBar.empreendedorCpfCnpj,
+            nomeBarragem: barNomeTrim || matchedBar.nomeBarragem,
+            codigoSnisb: barInput.codigoSnisb?.trim() || matchedBar.codigoSnisb,
+            processoReferencia: clean.processo?.trim() || matchedBar.processoReferencia,
+            municipio: barInput.municipio?.trim() || clean.municipio?.trim() || matchedBar.municipio || '',
+            uf: clean.uf?.trim() || matchedBar.uf || 'MT',
+            cursoAguaBarrado: clean.cursoAguaBarrado?.trim() || matchedBar.cursoAguaBarrado,
+            usoPreponderante:
+              barInput.usoPreponderante?.trim() ||
+              clean.usoPreponderante?.trim() ||
+              matchedBar.usoPreponderante,
+            situacaoEmpreendimento:
+              clean.situacaoEmpreendimento?.trim() || matchedBar.situacaoEmpreendimento,
+            tipoBarragem:
+              barInput.tipoBarragem?.trim() || clean.tipoBarragem?.trim() || matchedBar.tipoBarragem,
+            coordenadasGMS:
+              (hasCoords ? barInput.coordenadasGMS : undefined) ||
+              clean.coordenadasGMS ||
+              matchedBar.coordenadasGMS,
+            altura: barInput.altura?.trim() || clean.altura?.trim() || matchedBar.altura,
+            volume: barInput.volume?.trim() || clean.volume?.trim() || matchedBar.volume,
+            larguraCoroamento: clean.larguraCoroamento?.trim() || matchedBar.larguraCoroamento,
+            comprimentoCoroamento:
+              clean.comprimentoCoroamento?.trim() || matchedBar.comprimentoCoroamento,
+            classificacaoBarragem:
+              clean.classificacaoBarragem?.trim() || matchedBar.classificacaoBarragem,
+            classificacaoDPA: clean.classificacaoDPA?.trim() || matchedBar.classificacaoDPA,
+            classificacaoCRI: clean.classificacaoCRI?.trim() || matchedBar.classificacaoCRI,
+            portariaClassificacao:
+              clean.portariaClassificacao?.trim() || matchedBar.portariaClassificacao,
+            parecerClassificacao:
+              clean.parecerClassificacao?.trim() || matchedBar.parecerClassificacao,
+            sourceSystem: matchedBar.sourceSystem || CURRENT_SYSTEM_ID,
+          },
+          { allowEditFromForm: true }
+        );
+        if (!barragemIds.includes(savedBar.id)) barragemIds.push(savedBar.id);
+      } else {
+        const createdBar = await this.saveBarragem(
+          {
+            empreendedorId: empreendedorId || '',
+            empreendedorNome: matchedEmp?.nome || clean.empreendedorNome,
+            empreendedorCpfCnpj: matchedEmp?.cpfCnpj || clean.cpfCnpj,
+            nomeBarragem: resolvedName,
+            codigoSnisb: barInput.codigoSnisb,
+            processoReferencia: clean.processo,
+            municipio: barInput.municipio || clean.municipio || '',
+            uf: clean.uf || 'MT',
+            cursoAguaBarrado: clean.cursoAguaBarrado,
+            usoPreponderante: barInput.usoPreponderante || clean.usoPreponderante,
+            situacaoEmpreendimento: clean.situacaoEmpreendimento,
+            tipoBarragem: barInput.tipoBarragem || clean.tipoBarragem,
+            coordenadasGMS: hasCoords ? barInput.coordenadasGMS : clean.coordenadasGMS,
+            altura: barInput.altura || clean.altura,
+            volume: barInput.volume || clean.volume,
+            larguraCoroamento: clean.larguraCoroamento,
+            comprimentoCoroamento: clean.comprimentoCoroamento,
+            classificacaoBarragem: clean.classificacaoBarragem,
+            classificacaoDPA: clean.classificacaoDPA,
+            classificacaoCRI: clean.classificacaoCRI,
+            portariaClassificacao: clean.portariaClassificacao,
+            parecerClassificacao: clean.parecerClassificacao,
+            sourceSystem: CURRENT_SYSTEM_ID,
+            createdByAnalyst: clean.analista,
+          },
+          { allowEditFromForm: true }
+        );
+        workingBarragens.unshift(createdBar);
+        if (!barragemIds.includes(createdBar.id)) barragemIds.push(createdBar.id);
+        createdBarragemCount += 1;
+      }
     }
 
-    if (matchedBarragem) {
-      barragemId = matchedBarragem.id;
-      await this.saveBarragem(
-        {
-          ...matchedBarragem,
-          id: matchedBarragem.id,
-          empreendedorId: empreendedorId || matchedBarragem.empreendedorId || '',
-          empreendedorNome: matchedEmp?.nome || clean.empreendedorNome || matchedBarragem.empreendedorNome,
-          empreendedorCpfCnpj:
-            matchedEmp?.cpfCnpj || clean.cpfCnpj || matchedBarragem.empreendedorCpfCnpj,
-          nomeBarragem: clean.nomeBarragem?.trim() || matchedBarragem.nomeBarragem,
-          codigoSnisb: clean.codigoSnisb?.trim() || matchedBarragem.codigoSnisb,
-          processoReferencia: clean.processo?.trim() || matchedBarragem.processoReferencia,
-          municipio: clean.municipio?.trim() || matchedBarragem.municipio || '',
-          uf: clean.uf?.trim() || matchedBarragem.uf || 'MT',
-          cursoAguaBarrado: clean.cursoAguaBarrado?.trim() || matchedBarragem.cursoAguaBarrado,
-          usoPreponderante: clean.usoPreponderante?.trim() || matchedBarragem.usoPreponderante,
-          situacaoEmpreendimento:
-            clean.situacaoEmpreendimento?.trim() || matchedBarragem.situacaoEmpreendimento,
-          tipoBarragem: clean.tipoBarragem?.trim() || matchedBarragem.tipoBarragem,
-          coordenadasGMS: clean.coordenadasGMS || matchedBarragem.coordenadasGMS,
-          altura: clean.altura?.trim() || matchedBarragem.altura,
-          volume: clean.volume?.trim() || matchedBarragem.volume,
-          larguraCoroamento: clean.larguraCoroamento?.trim() || matchedBarragem.larguraCoroamento,
-          comprimentoCoroamento:
-            clean.comprimentoCoroamento?.trim() || matchedBarragem.comprimentoCoroamento,
-          classificacaoBarragem:
-            clean.classificacaoBarragem?.trim() || matchedBarragem.classificacaoBarragem,
-          classificacaoDPA: clean.classificacaoDPA?.trim() || matchedBarragem.classificacaoDPA,
-          classificacaoCRI: clean.classificacaoCRI?.trim() || matchedBarragem.classificacaoCRI,
-          portariaClassificacao:
-            clean.portariaClassificacao?.trim() || matchedBarragem.portariaClassificacao,
-          parecerClassificacao:
-            clean.parecerClassificacao?.trim() || matchedBarragem.parecerClassificacao,
-          sourceSystem: matchedBarragem.sourceSystem || CURRENT_SYSTEM_ID,
-        },
-        { allowEditFromForm: true }
-      );
-    } else if (
-      (clean.nomeBarragem && clean.nomeBarragem.trim().length > 1) ||
-      (snisbNorm && snisbNorm.length > 0)
-    ) {
-      const createdBar = await this.saveBarragem(
-        {
-          empreendedorId: empreendedorId || '',
-          empreendedorNome: matchedEmp?.nome || clean.empreendedorNome,
-          empreendedorCpfCnpj: matchedEmp?.cpfCnpj || clean.cpfCnpj,
-          nomeBarragem: clean.nomeBarragem || `Barragem (${clean.codigoSnisb})`,
-          codigoSnisb: clean.codigoSnisb,
-          processoReferencia: clean.processo,
-          municipio: clean.municipio || '',
-          uf: clean.uf || 'MT',
-          cursoAguaBarrado: clean.cursoAguaBarrado,
-          usoPreponderante: clean.usoPreponderante,
-          situacaoEmpreendimento: clean.situacaoEmpreendimento,
-          tipoBarragem: clean.tipoBarragem,
-          coordenadasGMS: clean.coordenadasGMS,
-          altura: clean.altura,
-          volume: clean.volume,
-          larguraCoroamento: clean.larguraCoroamento,
-          comprimentoCoroamento: clean.comprimentoCoroamento,
-          classificacaoBarragem: clean.classificacaoBarragem,
-          classificacaoDPA: clean.classificacaoDPA,
-          classificacaoCRI: clean.classificacaoCRI,
-          portariaClassificacao: clean.portariaClassificacao,
-          parecerClassificacao: clean.parecerClassificacao,
-          sourceSystem: CURRENT_SYSTEM_ID,
-          createdByAnalyst: clean.analista,
-        },
-        { allowEditFromForm: true }
-      );
-      barragemId = createdBar.id;
-      createdBarragem = true;
-    }
-
-    // 3. Responsáveis Técnicos
+    // 3. Responsáveis Técnicos (create or update)
     if (Array.isArray(clean.responsaveisTecnicos) && clean.responsaveisTecnicos.length > 0) {
-      let existingRTs = readList<ResponsavelTecnicoCanonico>(ADMINISTRA_STORAGE_KEYS.RTS);
+      let existingRTs = [...rtsList];
       for (const rtInput of clean.responsaveisTecnicos) {
         const rtName = (rtInput.nome || '').trim();
         if (!rtName) continue;
+        const rtArt = (rtInput.art || clean.art || '').trim() || undefined;
         const matchedRT = existingRTs.find(
           (r) => normalizeSearchText(r.nome) === normalizeSearchText(rtName)
         );
         if (matchedRT) {
-          responsavelTecnicoIds.push(matchedRT.id);
+          const updatedRT = await this.saveResponsavelTecnico(
+            {
+              ...matchedRT,
+              id: matchedRT.id,
+              nome: rtName,
+              registroProfissional:
+                rtInput.registroProfissional?.trim() || matchedRT.registroProfissional,
+              formacaoProfissional:
+                rtInput.formacaoProfissional?.trim() || matchedRT.formacaoProfissional,
+              cpf: rtInput.cpf?.trim() || matchedRT.cpf,
+              art: rtArt || matchedRT.art,
+              sourceSystem: matchedRT.sourceSystem || CURRENT_SYSTEM_ID,
+            },
+            { allowEditFromForm: true }
+          );
+          if (!responsavelTecnicoIds.includes(updatedRT.id)) {
+            responsavelTecnicoIds.push(updatedRT.id);
+          }
         } else {
           const createdRT = await this.saveResponsavelTecnico(
             {
@@ -623,6 +830,7 @@ export class LocalAdministraRepository implements AdministraRegistryRepository {
               registroProfissional: rtInput.registroProfissional,
               formacaoProfissional: rtInput.formacaoProfissional,
               cpf: rtInput.cpf,
+              art: rtArt,
               sourceSystem: CURRENT_SYSTEM_ID,
               createdByAnalyst: clean.analista,
             },
@@ -637,10 +845,12 @@ export class LocalAdministraRepository implements AdministraRegistryRepository {
 
     return {
       empreendedorId,
-      barragemId,
+      barragemId: barragemIds[0] || clean.existingBarragemId,
+      barragemIds,
       responsavelTecnicoIds,
       createdEmpreendedor,
-      createdBarragem,
+      createdBarragem: createdBarragemCount > 0,
+      createdBarragemCount,
       createdRTCount,
     };
   }

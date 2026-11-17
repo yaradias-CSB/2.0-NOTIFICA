@@ -490,7 +490,14 @@ export interface NotificacaoAntigaData {
 
 export interface BarragemCoordenada {
   id: string;
+  barragemId?: string;
   nome?: string;
+  codigoSnisb?: string;
+  municipio?: string;
+  usoPreponderante?: string;
+  tipoBarragem?: string;
+  altura?: string;
+  volume?: string;
   lat: string;
   long: string;
 }
@@ -516,6 +523,7 @@ export interface NotificacaoData extends AppDocument {
   lat: string;
   long: string;
   barragens?: BarragemCoordenada[];
+  barragemIds?: string[];
   enderecoEmpreendimento: string;
   municipioEmpreendimento: string;
   cepEmpreendimento: string;
@@ -533,6 +541,7 @@ export interface NotificacaoData extends AppDocument {
 
   // Topic 4
   textoNotificacao: string;
+  textoNotificacaoCustomizado?: boolean;
 
   // Topic 5
   textoSigaDoc?: string;

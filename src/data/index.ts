@@ -13,6 +13,7 @@ export type {
   EcosystemFederationRepository,
   FormEntitySyncInput,
   FormEntitySyncResult,
+  LinkArtRTInput,
 } from './types';
 export { getEcosystemConnections, fetchEcosystemConnections } from './ecosystemConfig';
 

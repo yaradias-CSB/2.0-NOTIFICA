@@ -1,9 +1,14 @@
 import {
+  BarragemCanonica,
   ChangeRequest,
   ChangeRequestTargetType,
   CURRENT_SYSTEM_ID,
   EcosystemProductSummary,
+  EcosystemRemoteSystemDiagnostic,
   EcosystemSystemId,
+  EmpreendedorCanonico,
+  IntegratedSystemsDataPayload,
+  ResponsavelTecnicoCanonico,
 } from '../types/ecosystem';
 import { AdministraRegistryRepository, EcosystemFederationRepository } from './types';
 import {
@@ -19,7 +24,28 @@ const ECOSYSTEM_STORAGE_KEYS = {
   EXTERNAL_CLASSIFICA_PRODUCTS: 'ecosystem_classifica_products',
   EXTERNAL_FISCALIZA_PRODUCTS: 'ecosystem_fiscaliza_products',
   EXTERNAL_ADMINISTRA_PRODUCTS: 'ecosystem_administra_products',
+  INTEGRATED_CACHE: 'notifica_csb_integrated_systems_cache',
 } as const;
+
+const EMPTY_DIAGNOSTIC = (systemId: EcosystemSystemId): EcosystemRemoteSystemDiagnostic => ({
+  systemId,
+  remoteConfigured: false,
+  reachable: false,
+  authDenied: false,
+  empreendedoresCount: 0,
+  barragensCount: 0,
+  rtsCount: 0,
+  productsCount: 0,
+});
+
+export function createEmptyDiagnostics(): Record<EcosystemSystemId, EcosystemRemoteSystemDiagnostic> {
+  return {
+    ADMINISTRA: EMPTY_DIAGNOSTIC('ADMINISTRA'),
+    CLASSIFICA: EMPTY_DIAGNOSTIC('CLASSIFICA'),
+    NOTIFICA: EMPTY_DIAGNOSTIC('NOTIFICA'),
+    FISCALIZA: EMPTY_DIAGNOSTIC('FISCALIZA'),
+  };
+}
 
 function normalizeText(value?: string): string {
   if (!value) return '';
@@ -47,6 +73,32 @@ function writeList<T>(key: string, items: T[]): void {
     localStorage.setItem(key, JSON.stringify(cleaned));
   } catch (err) {
     console.warn(`Erro ao salvar ${key}:`, err);
+  }
+}
+
+function readCachedIntegrated(): IntegratedSystemsDataPayload {
+  try {
+    const raw = localStorage.getItem(ECOSYSTEM_STORAGE_KEYS.INTEGRATED_CACHE);
+    const fallback: IntegratedSystemsDataPayload = {
+      empreendedores: [],
+      barragens: [],
+      responsaveisTecnicos: [],
+      products: [],
+      diagnostics: createEmptyDiagnostics(),
+      fetchedAt: '',
+    };
+    const parsed = safeJsonParse<IntegratedSystemsDataPayload>(raw, fallback);
+    if (!parsed || !Array.isArray(parsed.empreendedores)) return fallback;
+    return parsed;
+  } catch {
+    return {
+      empreendedores: [],
+      barragens: [],
+      responsaveisTecnicos: [],
+      products: [],
+      diagnostics: createEmptyDiagnostics(),
+      fetchedAt: '',
+    };
   }
 }
 
@@ -199,7 +251,79 @@ export class LocalEcosystemRepository implements EcosystemFederationRepository {
     }
   }
 
+  async getIntegratedSystemsData(system?: EcosystemSystemId): Promise<IntegratedSystemsDataPayload> {
+    const cached = readCachedIntegrated();
+    if (typeof window === 'undefined' || (typeof navigator !== 'undefined' && !navigator.onLine)) {
+      return cached;
+    }
+
+    try {
+      const query = system ? `?system=${encodeURIComponent(system)}` : '';
+      const response = await fetch(`/api/ecosystem/integrated-data${query}`);
+      if (!response.ok) return cached;
+
+      const data = (await response.json()) as Partial<IntegratedSystemsDataPayload>;
+      const incomingEmps = Array.isArray(data.empreendedores) ? (data.empreendedores as EmpreendedorCanonico[]) : [];
+      const incomingBars = Array.isArray(data.barragens) ? (data.barragens as BarragemCanonica[]) : [];
+      const incomingRts = Array.isArray(data.responsaveisTecnicos)
+        ? (data.responsaveisTecnicos as ResponsavelTecnicoCanonico[])
+        : [];
+      const incomingProds = Array.isArray(data.products) ? (data.products as EcosystemProductSummary[]) : [];
+
+      const payload: IntegratedSystemsDataPayload = system
+        ? {
+            empreendedores: [
+              ...cached.empreendedores.filter((e) => e.sourceSystem !== system),
+              ...incomingEmps,
+            ],
+            barragens: [
+              ...cached.barragens.filter((b) => b.sourceSystem !== system),
+              ...incomingBars,
+            ],
+            responsaveisTecnicos: [
+              ...cached.responsaveisTecnicos.filter((rt) => rt.sourceSystem !== system),
+              ...incomingRts,
+            ],
+            products: [
+              ...cached.products.filter((p) => p.systemId !== system),
+              ...incomingProds,
+            ],
+            diagnostics: {
+              ...cached.diagnostics,
+              ...(data.diagnostics || {}),
+            },
+            fetchedAt: data.fetchedAt || new Date().toISOString(),
+          }
+        : {
+            empreendedores: incomingEmps,
+            barragens: incomingBars,
+            responsaveisTecnicos: incomingRts,
+            products: incomingProds,
+            diagnostics: {
+              ...createEmptyDiagnostics(),
+              ...(data.diagnostics || {}),
+            },
+            fetchedAt: data.fetchedAt || new Date().toISOString(),
+          };
+
+      try {
+        localStorage.setItem(
+          ECOSYSTEM_STORAGE_KEYS.INTEGRATED_CACHE,
+          JSON.stringify(stripSensitiveFields(payload))
+        );
+      } catch {
+        // Ignore storage quota warning
+      }
+
+      return payload;
+    } catch {
+      return cached;
+    }
+  }
+
   async getExternalProducts(): Promise<EcosystemProductSummary[]> {
+    const cachedIntegrated = readCachedIntegrated().products;
+
     const classifica = readList<EcosystemProductSummary>(
       ECOSYSTEM_STORAGE_KEYS.EXTERNAL_CLASSIFICA_PRODUCTS
     ).map((p) => ({ ...p, systemId: 'CLASSIFICA' as const, readonly: true }));
@@ -212,7 +336,13 @@ export class LocalEcosystemRepository implements EcosystemFederationRepository {
       ECOSYSTEM_STORAGE_KEYS.EXTERNAL_ADMINISTRA_PRODUCTS
     ).map((p) => ({ ...p, systemId: 'ADMINISTRA' as const, readonly: true }));
 
-    return [...classifica, ...fiscaliza, ...administra];
+    const combined = [...cachedIntegrated, ...classifica, ...fiscaliza, ...administra];
+    const deduped = new Map<string, EcosystemProductSummary>();
+    combined.forEach((item) => {
+      const key = `${item.systemId}::${item.id}`;
+      if (!deduped.has(key)) deduped.set(key, item);
+    });
+    return Array.from(deduped.values());
   }
 
   async findProductsByEntity(
@@ -252,3 +382,4 @@ export class LocalEcosystemRepository implements EcosystemFederationRepository {
     });
   }
 }
+

@@ -1,9 +1,9 @@
 import React, { useState, useEffect, useContext } from 'react';
 import { 
-  Save, Download, ArrowLeft, Eraser, FileDown, CheckCircle, Loader2, 
+  Save, Download, ArrowLeft, Eraser, FileDown, CheckCircle, CheckCircle2, Loader2, 
   MapPin, Phone, Building2, FileText, ClipboardList, Eye,
-  ChevronDown, ChevronUp, Users, Plus, X, Search, Globe, RefreshCw,
-  Trash2, ArrowUp, ArrowDown, Crosshair
+  ChevronDown, ChevronUp, Users, Plus, PlusCircle, X, Search, Globe, RefreshCw,
+  Trash2, ArrowUp, ArrowDown, Crosshair, Database
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { toast } from 'sonner';
@@ -11,6 +11,12 @@ import ConfirmModal from './ui/ConfirmModal';
 import { NotificacaoData, BarragemCoordenada } from '../types';
 import { generateNotificacaoDoc } from '../services/docxService';
 import { generateNotificacaoPDF } from '../services/pdfService';
+import {
+  buildNotificacaoText,
+  buildNotificacaoSigaDocText,
+  coordenadasGmsToStrings,
+  stringsToCoordenadasGms,
+} from '../services/documentTemplates';
 import { logActivity } from '../lib/audit';
 import { DataContext } from '../contexts/DataContext';
 import { EcosystemContext } from '../contexts/EcosystemContext';
@@ -130,7 +136,17 @@ const formatCARMT = (v: string) => {
 
 const NotificaForm: React.FC<NotificaFormProps> = ({ onBack, initialData, readOnly }) => {
   const { refreshData, saveNotificacao } = useContext(DataContext);
-  const { syncEntitiesFromForm } = useContext(EcosystemContext);
+  const {
+    empreendedores: administraEmps,
+    barragens: registraBarragens,
+    saveEmpreendedor,
+    saveBarragem,
+    syncEntitiesFromForm,
+    refreshEcosystem,
+  } = useContext(EcosystemContext);
+  const [savingAdministra, setSavingAdministra] = useState(false);
+  const [registeringEntity, setRegisteringEntity] = useState<'empreendedor' | 'barragem' | null>(null);
+  const [registeringBarragemIndex, setRegisteringBarragemIndex] = useState<number | null>(null);
   
   const [formData, setFormData] = useState<NotificacaoData>(() => {
     const base = initialData ? { ...INITIAL_DATA, ...initialData } : { ...INITIAL_DATA, id: crypto.randomUUID() };
@@ -142,15 +158,17 @@ const NotificaForm: React.FC<NotificaFormProps> = ({ onBack, initialData, readOn
     if (initialBarragens.length === 0) {
       if (base.lat || base.long) {
         initialBarragens = [{
-          id: crypto.randomUUID(),
-          nome: 'Barragem 1',
+          id: base.barragemId || crypto.randomUUID(),
+          barragemId: base.barragemId,
+          nome: base.nomeFantasia || 'Barragem 1',
           lat: base.lat || '',
           long: base.long || ''
         }];
       } else {
         initialBarragens = [{
-          id: crypto.randomUUID(),
-          nome: 'Barragem 1',
+          id: base.barragemId || crypto.randomUUID(),
+          barragemId: base.barragemId,
+          nome: base.nomeFantasia || 'Barragem 1',
           lat: '',
           long: ''
         }];
@@ -166,7 +184,7 @@ const NotificaForm: React.FC<NotificaFormProps> = ({ onBack, initialData, readOn
   });
 
   const [isTextoEdited, setIsTextoEdited] = useState(() => {
-    return !!(initialData && initialData.textoNotificacao);
+    return Boolean(initialData?.textoNotificacaoCustomizado);
   });
 
   const [isSaving, setIsSaving] = useState(false);
@@ -286,7 +304,7 @@ const NotificaForm: React.FC<NotificaFormProps> = ({ onBack, initialData, readOn
     toast.success(`Ordem alterada: barragem ${direction === 'up' ? 'subiu' : 'desceu'} na hierarquia.`);
   };
 
-  const handleBarragemChange = (index: number, field: 'nome' | 'lat' | 'long', value: string) => {
+  const handleBarragemChange = (index: number, field: 'nome' | 'lat' | 'long' | 'codigoSnisb', value: string) => {
     setActiveBarragemIndex(index);
     setFormData(prev => {
       const current = [...(prev.barragens || [])];
@@ -305,12 +323,52 @@ const NotificaForm: React.FC<NotificaFormProps> = ({ onBack, initialData, readOn
         updates[field] = value;
       }
 
-      setIsTextoEdited(false);
       return {
         ...prev,
         ...updates
       };
     });
+  };
+
+  const handleAssignAdministraBarragemToRow = (index: number, barragemId: string) => {
+    if (!barragemId) {
+      setFormData(prev => {
+        const current = [...(prev.barragens || [])];
+        if (!current[index]) return prev;
+        current[index] = { ...current[index], barragemId: undefined };
+        return { ...prev, barragens: current };
+      });
+      return;
+    }
+
+    const found = registraBarragens.find((b) => b.id === barragemId);
+    if (!found) return;
+
+    const { lat: latStr, long: longStr } = coordenadasGmsToStrings(found.coordenadasGMS);
+    setFormData(prev => {
+      const current = [...(prev.barragens || [])];
+      if (!current[index]) return prev;
+      current[index] = {
+        ...current[index],
+        id: found.id,
+        barragemId: found.id,
+        nome: found.nomeBarragem || current[index].nome,
+        codigoSnisb: found.codigoSnisb || current[index].codigoSnisb,
+        municipio: found.municipio || current[index].municipio,
+        lat: latStr || current[index].lat,
+        long: longStr || current[index].long,
+      };
+      return {
+        ...prev,
+        barragens: current,
+        barragemId: index === 0 ? found.id : prev.barragemId || found.id,
+        empreendedorId: prev.empreendedorId || found.empreendedorId,
+        nomeFantasia: index === 0 ? (found.nomeBarragem || prev.nomeFantasia) : prev.nomeFantasia,
+        lat: index === 0 ? (latStr || prev.lat) : prev.lat,
+        long: index === 0 ? (longStr || prev.long) : prev.long,
+      };
+    });
+    toast.success(`Barragem "${found.nomeBarragem}" vinculada do Administra.`);
   };
 
   const [confirmModal, setConfirmModal] = useState<{
@@ -331,122 +389,9 @@ const NotificaForm: React.FC<NotificaFormProps> = ({ onBack, initialData, readOn
     cancelLabel: 'Cancelar'
   });
 
-  const generateNotificationText = (data: NotificacaoData): string => {
-    const { 
-      empreendedorNome, 
-      tipoDocumentoIdentificacao, 
-      documentoIdentificacao, 
-      carMt,
-      municipioEmpreendimento,
-      lat, 
-      long, 
-      barragens,
-      prazoVencimento, 
-      objetivo, 
-      analistas,
-      dataNotificacao
-    } = data;
-
-    const dateToFormat = dataNotificacao ? new Date(dataNotificacao + 'T12:00:00') : new Date();
-    const formattedDate = !isNaN(dateToFormat.getTime()) 
-      ? dateToFormat.toLocaleDateString('pt-BR') 
-      : new Date().toLocaleDateString('pt-BR');
-    
-    const analystsText = (analistas || []).length > 0 
-      ? "\n\n" + analistas.join("\n")
-      : "";
-
-    const activeBarragens = (barragens && barragens.length > 0)
-      ? barragens
-      : [{ id: '1', nome: 'Barragem 1', lat: lat || '', long: long || '' }];
-
-    let solicitacaoItemI = '';
-
-    if (activeBarragens.length > 1) {
-      // Elenca todas as barragens inseridas em ordem hierárquica
-      const coordsList = activeBarragens.map((b, idx) => {
-        const bLat = b.lat || "00°00'00,00\"";
-        const bLong = b.long || "00°00'00,00\"";
-        return `${idx + 1}. LAT ${bLat} S e LONG ${bLong} O,`;
-      }).join('\n\n\n\n');
-
-      solicitacaoItemI = `I. Notificamos ${empreendedorNome || '________________'} de ${tipoDocumentoIdentificacao || 'CPF'} ${documentoIdentificacao || '________________'}, responsável pela área vinculada ao CAR/MT nº ${carMt || '________________'}, a providenciar a classificação de segurança por meio de cadastro e classificação das barragns localizada no município de ${municipioEmpreendimento || '________________'}, nas coordenadas:\n\n\n\n\n\n${coordsList}\n\n em conformidade com o enquadramento estabelecido na legislação vigente, considerando o que dispõe a Lei nº 12.334, a Resolução CEHIDRO nº 163 de 18 de maio de 2023, a Instrução Normativa nº 08 de 18 de dezembro de 2023 e o Termo de Referência nº 17, disponíveis no sítio eletrônico da SEMA/MT; prazo para atendimento das solicitações: ${prazoVencimento || '90'} dias;`;
-    } else {
-      const bLat = activeBarragens[0]?.lat || lat || "00°00'00,00\"";
-      const bLong = activeBarragens[0]?.long || long || "00°00'00,00\"";
-      solicitacaoItemI = `I. Notificamos ${empreendedorNome || '________________'} de ${tipoDocumentoIdentificacao || 'CPF'} ${documentoIdentificacao || '________________'}, responsável pela área vinculada ao CAR/MT nº ${carMt || '________________'}, a providenciar a classificação de segurança por meio de cadastro e classificação da barragem localizada no município de ${municipioEmpreendimento || '________________'}, utilizando como coordenada de referência (sede ou barragem) LAT ${bLat} S e LONG ${bLong} O, em conformidade com o enquadramento estabelecido na legislação vigente, considerando o que dispõe a Lei nº 12.334, a Resolução CEHIDRO nº 163 de 18 de maio de 2023, a Instrução Normativa nº 08 de 18 de dezembro de 2023 e o Termo de Referência nº 17, disponíveis no sítio eletrônico da SEMA/MT; prazo para atendimento das solicitações: ${prazoVencimento || '90'} dias;`;
-    }
-
-    return `OBJETIVO:
-
-${objetivo || 'Notificação para o cadastro e a classificação do Dano Potencial Associado e Categoria de Risco, para barragens.'}
-
-SOLICITAÇÕES:
-
-${solicitacaoItemI}
-
-II. O não atendimento destas solicitações, no prazo estabelecido, acarretará as sanções administrativas cabíveis, nos termos da Lei nº 12.334, de 20 de setembro de 2010 e suas alterações, e da Resolução CNRH nº 230 de 22 de março de 2022.
-
-INFORMAÇÕES GERAIS ORIENTATIVAS
-
-I.\tCabe ressaltar que o empreendedor é responsável pela segurança da barragem, esteja ela submetida ou não à referida Lei, devendo zelar pela sua manutenção e operação, de maneira a reduzir a possibilidade de acidente e suas consequências;
-
-II.\tA manutenção da barragem deve ser realizada conforme orientações apresentadas na Cartilha de Ações de Manutenção em Barragens de Terra. Disponível em: http://www.sema.mt.gov.br/site/phocadownload/SURH2/Cartilha%20de%20Aes%20de%20Manuteno%20em%20Barragens%20de%20Terra.pdf; e http://www.sema.mt.gov.br/site/index.php/unidades-administrativas/recursos-hidricos/category/394-seguran%C3%A7a-de-barragens.
-
-III. Informações sobre Legislações e Normativas (base legal para segurança de barragens em MT) podem ser acessas no SISB-MT (Sistema de Informações sobre Segurança de Barragens de Acumulação de água para Usos Múltiplos (exceto geração de energia) do Estado de Mato Grosso), no link https://sisb-mt-csb.vercel.app/#informacoes
-
-IV. Considerando as características dos espelhos d’água identificados na imagem do Cadastro Ambiental Rural ${carMt || '<<CAR/MT>>'}, bem como as condições e características técnicas estabelecidas no art. 24 da Instrução Normativa SEMA nº 08, de 18 de dezembro de 2023, para fins de verificação da necessidade de classificação e cadastro, será obrigatória a classificação de segurança de toda barragem em operação que apresente, no mínimo, as seguintes características:
-1 – Dano Potencial Associado (DPA) baixo;
-2 – Altura do maciço, medida do ponto mais baixo do talude de jusante até o ponto mais alto da crista, maior ou igual a 3 m (três metros);
-3 – Capacidade total do reservatório maior ou igual a 500.000 m³ (quinhentos mil metros cúbicos);
-4 – Área de drenagem até o ponto do barramento maior ou igual a 2,0 km² (dois quilômetros quadrados).
-Ressalta-se que, em observância ao disposto no art. 24 da Instrução Normativa SEMA nº 08, de 18 de dezembro de 2023, quanto aos critérios para a obrigatoriedade de classificação de segurança de barragens, caso as barragens existentes na referida propriedade não se enquadrem nos critérios previstos no referido artigo, deverão ser apresentadas informações suficientes para sua caracterização e para a comprovação da não obrigatoriedade de classificação.
-
-Cuiabá/MT, ${formattedDate}.${analystsText}`;
-  };
-
-  const generateSigaDocText = (data: NotificacaoData): string => {
-    const { 
-      empreendedorNome, 
-      tipoDocumentoIdentificacao, 
-      documentoIdentificacao, 
-      carMt,
-      municipioEmpreendimento,
-      lat, 
-      long, 
-      barragens,
-      prazoVencimento, 
-      analistas,
-      dataNotificacao,
-      notificacaoGerada
-    } = data;
-
-    const dateToFormat = dataNotificacao ? new Date(dataNotificacao + 'T12:00:00') : new Date();
-    const formattedDate = !isNaN(dateToFormat.getTime()) 
-      ? dateToFormat.toLocaleDateString('pt-BR') 
-      : new Date().toLocaleDateString('pt-BR');
-
-    const analystsNames = (analistas || []).map(a => a.split('/')[0].trim()).join(', ');
-
-    const activeBarragens = (barragens && barragens.length > 0)
-      ? barragens
-      : [{ id: '1', nome: 'Barragem 1', lat: lat || '', long: long || '' }];
-
-    let coordsRefText = '';
-    if (activeBarragens.length > 1) {
-      coordsRefText = `nas coordenadas: ${activeBarragens.map((b, i) => `${i + 1}. LAT ${b.lat || "00°00'00,00\""} S e LONG ${b.long || "00°00'00,00\""} O`).join('; ')}`;
-    } else {
-      coordsRefText = `com coordenada de referência (sede ou barragem) em LAT ${activeBarragens[0]?.lat || lat || "00°00'00,00\""} S e LONG ${activeBarragens[0]?.long || long || "00°00'00,00\""} O`;
-    }
-
-    return `     Em cumprimento à Notificação nº ${notificacaoGerada || '____'}/CSB/SURH/SEMA-MT, emitida em ${formattedDate} por ${analystsNames || '________________'}, o(a) notificado(a) ${empreendedorNome || '________________'}, ${tipoDocumentoIdentificacao || 'CPF'} ${documentoIdentificacao || '________________'}, responsável pela área vinculada ao CAR/MT nº ${carMt || '________________'}, localizada em ${municipioEmpreendimento || '________________'}, ${coordsRefText}, fica ciente da obrigatoriedade de realizar o cadastro e a classificação da barragem, incluindo Dano Potencial Associado (DPA) e Categoria de Risco (CRI), e de apresentar a documentação técnica correspondente, nos termos da Lei nº 12.334/2010 e alterações, Resolução CEHIDRO nº 163/2023, Instrução Normativa nº 08/2023 e Termo de Referência nº 17, no prazo de ${prazoVencimento || '90'} dias.
-     O não atendimento ao disposto na notificação, no prazo estabelecido, sujeitará o(a) notificado(a) às sanções administrativas previstas na Resolução CNRH n°230 de 22 de março de 2022, sem prejuízo de outras responsabilizações.
-     Cuiabá/MT, ${formattedDate}.`;
-  };
-
   useEffect(() => {
-    const texto = generateNotificationText(formData);
-    const sigaDoc = generateSigaDocText(formData);
+    const texto = buildNotificacaoText(formData);
+    const sigaDoc = buildNotificacaoSigaDocText(formData);
 
     setFormData(prev => {
       const updates: Partial<NotificacaoData> = { textoSigaDoc: sigaDoc };
@@ -473,15 +418,16 @@ Cuiabá/MT, ${formattedDate}.${analystsText}`;
   ]);
 
   const handleForceUpdateText = () => {
-    const novoTexto = generateNotificationText(formData);
-    const novoSigaDoc = generateSigaDocText(formData);
+    const novoTexto = buildNotificacaoText(formData);
+    const novoSigaDoc = buildNotificacaoSigaDocText(formData);
     setIsTextoEdited(false);
     setFormData(prev => ({
       ...prev,
       textoNotificacao: novoTexto,
-      textoSigaDoc: novoSigaDoc
+      textoSigaDoc: novoSigaDoc,
+      textoNotificacaoCustomizado: false,
     }));
-    toast.success('Texto da notificação atualizado com as informações do formulário!');
+    toast.success('Texto da notificação regenerado com as informações do formulário!');
   };
 
   const toggleSection = (section: number) => {
@@ -493,6 +439,350 @@ Cuiabá/MT, ${formattedDate}.${analystsText}`;
       setIsTextoEdited(false);
     }
     setFormData(prev => ({ ...prev, [field]: value }));
+  };
+
+  const syncNotificaEntitiesToAdministra = async (source: NotificacaoData) => {
+    const sanitized = sanitizeObject(source);
+    const activeBarragens =
+      Array.isArray(sanitized.barragens) && sanitized.barragens.length > 0
+        ? sanitized.barragens
+        : [{
+            id: sanitized.barragemId || crypto.randomUUID(),
+            barragemId: sanitized.barragemId,
+            nome: sanitized.nomeFantasia || 'Barragem 1',
+            lat: sanitized.lat || '',
+            long: sanitized.long || '',
+          }];
+
+    const primaryBarragemNome =
+      activeBarragens[0]?.nome || sanitized.nomeFantasia || '';
+
+    const barragensPayload = activeBarragens.map((b, idx) => ({
+      existingBarragemId: b.barragemId || (idx === 0 ? sanitized.barragemId : undefined),
+      nomeBarragem:
+        b.nome ||
+        (idx === 0 ? sanitized.nomeFantasia : '') ||
+        `${sanitized.nomeFantasia || 'Barragem'} ${idx + 1}`.trim(),
+      codigoSnisb: b.codigoSnisb,
+      municipio: b.municipio || sanitized.municipioEmpreendimento,
+      usoPreponderante: b.usoPreponderante,
+      tipoBarragem: b.tipoBarragem,
+      altura: b.altura,
+      volume: b.volume,
+      coordenadasGMS: stringsToCoordenadasGms(b.lat, b.long),
+    }));
+
+    const syncRes = await syncEntitiesFromForm({
+      existingEmpreendedorId: sanitized.empreendedorId,
+      existingBarragemId: sanitized.barragemId,
+      empreendedorNome: sanitized.empreendedorNome,
+      tipoPessoa: sanitized.tipoDocumentoIdentificacao,
+      cpfCnpj: sanitized.documentoIdentificacao,
+      telefone: sanitized.telefone,
+      logradouro: sanitized.logradouro,
+      numero: sanitized.numero,
+      complemento: sanitized.complemento,
+      bairro: sanitized.bairro,
+      municipio: sanitized.municipioEmpreendimento,
+      uf: sanitized.ufCorrespondencia,
+      cep: sanitized.cepCorrespondencia,
+      carMt: sanitized.carMt,
+      nomeBarragem: primaryBarragemNome,
+      processo: sanitized.numProcesso,
+      coordenadasGMS: stringsToCoordenadasGms(
+        activeBarragens[0]?.lat || sanitized.lat,
+        activeBarragens[0]?.long || sanitized.long
+      ),
+      barragens: barragensPayload,
+      analista: sanitized.analistas?.[0] || 'Sistema Local',
+    });
+
+    const updatedBarragens = activeBarragens.map((b, idx) => ({
+      ...b,
+      barragemId: syncRes.barragemIds[idx] || b.barragemId,
+    }));
+
+    return {
+      sanitizedFormData: {
+        ...sanitized,
+        barragens: updatedBarragens,
+      },
+      resolvedEmpreendedorId: syncRes.empreendedorId || sanitized.empreendedorId,
+      resolvedBarragemId: syncRes.barragemIds[0] || syncRes.barragemId || sanitized.barragemId,
+      resolvedBarragemIds: syncRes.barragemIds,
+      syncRes,
+    };
+  };
+
+  const handleSaveOnlyToAdministra = async () => {
+    if (!formData.empreendedorNome && !formData.documentoIdentificacao && !(formData.barragens || []).some(b => b.nome)) {
+      toast.error('Preencha ao menos o Empreendedor ou a(s) Barragem(ns) para salvar no Administra.');
+      return;
+    }
+    setSavingAdministra(true);
+    try {
+      const {
+        sanitizedFormData,
+        resolvedEmpreendedorId,
+        resolvedBarragemId,
+        resolvedBarragemIds,
+        syncRes,
+      } = await syncNotificaEntitiesToAdministra(formData);
+
+      setFormData(prev => ({
+        ...prev,
+        empreendedorId: resolvedEmpreendedorId,
+        barragemId: resolvedBarragemId,
+        barragemIds: resolvedBarragemIds,
+        barragens: sanitizedFormData.barragens,
+      }));
+      await refreshEcosystem();
+      toast.success(
+        `Cadastro sincronizado no Administra (${resolvedBarragemIds.length || 1} barragem(ns)${
+          syncRes.createdBarragemCount > 0 ? `, ${syncRes.createdBarragemCount} nova(s)` : ''
+        }).`
+      );
+    } catch {
+      toast.error('Erro ao salvar cadastro no Administra.');
+    } finally {
+      setSavingAdministra(false);
+    }
+  };
+
+  const normalizeLookupKey = (value?: string) =>
+    (value || '')
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .toLowerCase()
+      .trim();
+
+  const hasEmpreendedorManual = Boolean(
+    formData.empreendedorNome?.trim() || formData.documentoIdentificacao?.trim()
+  );
+
+  const pendingBarragensIndices = (formData.barragens || [])
+    .map((b, idx) => ({ b, idx }))
+    .filter(
+      ({ b }) =>
+        !b.barragemId &&
+        Boolean(
+          b.nome?.trim() ||
+            b.lat?.trim() ||
+            b.long?.trim() ||
+            b.codigoSnisb?.trim() ||
+            formData.nomeFantasia?.trim()
+        )
+    );
+
+  const handleRegisterEmpreendedor = async () => {
+    const sanitized = sanitizeObject(formData);
+    const nome = sanitized.empreendedorNome?.trim();
+    if (!nome) {
+      toast.error('Informe a Identificação do Empreendedor antes de cadastrar na base de dados.');
+      return;
+    }
+
+    setRegisteringEntity('empreendedor');
+    try {
+      const digits = (sanitized.documentoIdentificacao || '').replace(/\D/g, '');
+      const carNorm = normalizeLookupKey(sanitized.carMt).replace(/[^a-z0-9]/g, '');
+      const nomeNorm = normalizeLookupKey(nome);
+
+      const matched =
+        (sanitized.empreendedorId
+          ? administraEmps.find((e) => e.id === sanitized.empreendedorId)
+          : undefined) ||
+        (digits ? administraEmps.find((e) => (e.cpfCnpjNormalizado || '') === digits) : undefined) ||
+        (carNorm
+          ? administraEmps.find(
+              (e) => normalizeLookupKey(e.carMt).replace(/[^a-z0-9]/g, '') === carNorm
+            )
+          : undefined) ||
+        (!digits ? administraEmps.find((e) => normalizeLookupKey(e.nome) === nomeNorm) : undefined);
+
+      const corrParts = (sanitized.municipioCorrespondencia || '').split('/');
+      const municipioRes =
+        corrParts[0]?.trim() || sanitized.municipioEmpreendimento || matched?.municipio;
+      const ufRes = corrParts[1]?.trim() || sanitized.ufCorrespondencia || matched?.uf || 'MT';
+
+      const res = await saveEmpreendedor(
+        {
+          ...(matched ? { id: matched.id } : {}),
+          nome,
+          tipoPessoa:
+            sanitized.tipoDocumentoIdentificacao ||
+            matched?.tipoPessoa ||
+            (digits.length === 14 ? 'CNPJ' : 'CPF'),
+          cpfCnpj: sanitized.documentoIdentificacao?.trim() || matched?.cpfCnpj || '',
+          telefone: sanitized.telefone?.trim() || matched?.telefone,
+          email: matched?.email,
+          logradouro: sanitized.logradouro?.trim() || matched?.logradouro,
+          numero: sanitized.numero?.trim() || matched?.numero,
+          complemento: sanitized.complemento?.trim() || matched?.complemento,
+          bairro: sanitized.bairro?.trim() || matched?.bairro,
+          municipio: municipioRes,
+          uf: ufRes,
+          cep: sanitized.cepCorrespondencia?.trim() || matched?.cep,
+          carMt: sanitized.carMt?.trim() || matched?.carMt,
+          situacao: matched?.situacao || 'ativo',
+          sourceSystem: matched?.sourceSystem || CURRENT_SYSTEM_ID,
+          createdByAnalyst:
+            matched?.createdByAnalyst ||
+            sanitized.analistas?.[0] ||
+            sanitized.analista ||
+            'Sistema Local',
+        },
+        matched ? { allowEditFromForm: true } : undefined
+      );
+
+      if (!res.success || !res.data) {
+        throw new Error(res.message || 'Erro ao cadastrar empreendedor na base de dados.');
+      }
+
+      setFormData((prev) => ({ ...prev, empreendedorId: res.data!.id }));
+      await refreshEcosystem();
+      toast.success(`Empreendedor "${res.data.nome}" cadastrado e vinculado na base Administra!`);
+    } catch (error: any) {
+      toast.error(error?.message || 'Erro ao cadastrar empreendedor no Administra.');
+    } finally {
+      setRegisteringEntity(null);
+    }
+  };
+
+  const handleRegisterBarragem = async (targetIndex?: number) => {
+    const sanitized = sanitizeObject(formData);
+    const activeBarragens =
+      Array.isArray(sanitized.barragens) && sanitized.barragens.length > 0
+        ? sanitized.barragens
+        : [
+            {
+              id: sanitized.barragemId || crypto.randomUUID(),
+              barragemId: sanitized.barragemId,
+              nome: sanitized.nomeFantasia || 'Barragem 1',
+              lat: sanitized.lat || '',
+              long: sanitized.long || '',
+            },
+          ];
+
+    const indicesToRegister =
+      typeof targetIndex === 'number'
+        ? [targetIndex]
+        : activeBarragens
+            .map((b, idx) => ({ b, idx }))
+            .filter(({ b }) => !b.barragemId)
+            .map(({ idx }) => idx);
+
+    if (indicesToRegister.length === 0) {
+      toast.info('Todas as barragens já estão cadastradas e vinculadas no Administra.');
+      return;
+    }
+
+    setRegisteringEntity('barragem');
+    if (typeof targetIndex === 'number') {
+      setRegisteringBarragemIndex(targetIndex);
+    }
+
+    try {
+      const updatedBarragens = [...activeBarragens];
+      let savedCount = 0;
+
+      for (const idx of indicesToRegister) {
+        const b = updatedBarragens[idx];
+        if (!b) continue;
+
+        const nomeBarragem =
+          b.nome?.trim() ||
+          (idx === 0 ? sanitized.nomeFantasia?.trim() : '') ||
+          `${sanitized.nomeFantasia || 'Barragem'} ${idx + 1}`.trim();
+
+        if (!nomeBarragem) {
+          toast.error(`Informe o nome da Barragem #${idx + 1} antes de cadastrar.`);
+          continue;
+        }
+
+        const snisbNorm = normalizeLookupKey(b.codigoSnisb);
+        const nameNorm = normalizeLookupKey(nomeBarragem);
+        const matched =
+          (b.barragemId ? registraBarragens.find((item) => item.id === b.barragemId) : undefined) ||
+          (snisbNorm
+            ? registraBarragens.find((item) => normalizeLookupKey(item.codigoSnisb) === snisbNorm)
+            : undefined) ||
+          registraBarragens.find(
+            (item) =>
+              normalizeLookupKey(item.nomeBarragem) === nameNorm &&
+              (!sanitized.empreendedorId ||
+                !item.empreendedorId ||
+                item.empreendedorId === sanitized.empreendedorId)
+          );
+
+        const res = await saveBarragem(
+          {
+            ...(matched ? { id: matched.id } : {}),
+            empreendedorId: sanitized.empreendedorId || matched?.empreendedorId,
+            empreendedorNome:
+              sanitized.empreendedorNome?.trim() || matched?.empreendedorNome,
+            empreendedorCpfCnpj:
+              sanitized.documentoIdentificacao?.trim() || matched?.empreendedorCpfCnpj,
+            nomeBarragem,
+            codigoSnisb: b.codigoSnisb?.trim() || matched?.codigoSnisb,
+            processo: sanitized.numProcesso?.trim() || matched?.processo,
+            municipio:
+              b.municipio?.trim() ||
+              sanitized.municipioEmpreendimento ||
+              matched?.municipio,
+            uf: 'MT',
+            usoPreponderante: b.usoPreponderante || matched?.usoPreponderante,
+            tipoBarragem: b.tipoBarragem || matched?.tipoBarragem,
+            altura: b.altura || matched?.altura,
+            volume: b.volume || matched?.volume,
+            coordenadasGMS:
+              b.lat || b.long
+                ? stringsToCoordenadasGms(b.lat, b.long)
+                : matched?.coordenadasGMS,
+            sourceSystem: matched?.sourceSystem || CURRENT_SYSTEM_ID,
+            createdByAnalyst:
+              matched?.createdByAnalyst ||
+              sanitized.analistas?.[0] ||
+              sanitized.analista ||
+              'Sistema Local',
+          },
+          matched ? { allowEditFromForm: true } : undefined
+        );
+
+        if (!res.success || !res.data) {
+          throw new Error(res.message || `Erro ao cadastrar Barragem #${idx + 1}.`);
+        }
+
+        updatedBarragens[idx] = {
+          ...b,
+          id: res.data.id,
+          barragemId: res.data.id,
+          nome: res.data.nomeBarragem || b.nome,
+        };
+        savedCount++;
+      }
+
+      if (savedCount > 0) {
+        const allIds = updatedBarragens.map((item) => item.barragemId).filter(Boolean) as string[];
+        setFormData((prev) => ({
+          ...prev,
+          barragens: updatedBarragens,
+          barragemId: updatedBarragens[0]?.barragemId || prev.barragemId,
+          barragemIds: allIds,
+        }));
+        await refreshEcosystem();
+        toast.success(
+          savedCount === 1
+            ? 'Barragem cadastrada e vinculada na base Administra!'
+            : `${savedCount} barragens cadastradas e vinculadas na base Administra!`
+        );
+      }
+    } catch (error: any) {
+      toast.error(error?.message || 'Erro ao cadastrar barragem no Administra.');
+    } finally {
+      setRegisteringEntity(null);
+      setRegisteringBarragemIndex(null);
+    }
   };
 
   const handleSave = async (status: 'Rascunho' | 'Concluído') => {
@@ -512,8 +802,24 @@ Cuiabá/MT, ${formattedDate}.${analystsText}`;
         toast.error('CNPJ inválido.');
         return;
       }
+
+      const missingRegistrations: string[] = [];
+      if (!formData.empreendedorId) missingRegistrations.push('Empreendedor');
+      if (pendingBarragensIndices.length > 0) {
+        missingRegistrations.push(
+          `Barragem(ns) ${pendingBarragensIndices
+            .map(({ idx, b }) => `#${idx + 1}${b.nome ? ` (${b.nome})` : ''}`)
+            .join(', ')}`
+        );
+      }
+
+      if (missingRegistrations.length > 0) {
+        toast.error(
+          `Para concluir a notificação, cadastre antes na base Administra: ${missingRegistrations.join(', ')}. Você pode salvar como Rascunho temporariamente.`
+        );
+        return;
+      }
     } else {
-      // For Rascunho, at least a name or process might be helpful but not strictly required by the db usually
       if (!formData.empreendedorNome && !formData.numProcesso) {
         toast.error('Preencha ao menos o nome do empreendedor ou o número do processo para salvar o rascunho.');
         return;
@@ -522,38 +828,31 @@ Cuiabá/MT, ${formattedDate}.${analystsText}`;
 
     setIsSaving(true);
     try {
-      const sanitizedFormData = sanitizeObject(formData);
-      const primaryBarragemNome =
-        sanitizedFormData.nomeFantasia || sanitizedFormData.barragens?.[0]?.nome || '';
+      const sanitizedRaw = sanitizeObject(formData);
+      const isFinalizing = status === 'Concluído';
 
-      const syncRes = await syncEntitiesFromForm({
-        existingEmpreendedorId: sanitizedFormData.empreendedorId,
-        existingBarragemId: sanitizedFormData.barragemId,
-        empreendedorNome: sanitizedFormData.empreendedorNome,
-        tipoPessoa: sanitizedFormData.tipoDocumentoIdentificacao,
-        cpfCnpj: sanitizedFormData.documentoIdentificacao,
-        telefone: sanitizedFormData.telefone,
-        logradouro: sanitizedFormData.logradouro,
-        numero: sanitizedFormData.numero,
-        complemento: sanitizedFormData.complemento,
-        bairro: sanitizedFormData.bairro,
-        municipio: sanitizedFormData.municipioEmpreendimento,
-        uf: sanitizedFormData.ufCorrespondencia,
-        cep: sanitizedFormData.cepCorrespondencia,
-        carMt: sanitizedFormData.carMt,
-        nomeBarragem: primaryBarragemNome,
-        processo: sanitizedFormData.numProcesso,
-        analista: sanitizedFormData.analistas?.[0] || 'Sistema Local',
-      });
+      let sanitizedFormData = sanitizedRaw;
+      let resolvedEmpreendedorId = sanitizedRaw.empreendedorId;
+      let resolvedBarragemId = sanitizedRaw.barragemId;
+      let resolvedBarragemIds =
+        sanitizedRaw.barragemIds ||
+        (sanitizedRaw.barragens || []).map((b) => b.barragemId).filter(Boolean) as string[];
 
-      const resolvedEmpreendedorId = syncRes.empreendedorId || sanitizedFormData.empreendedorId;
-      const resolvedBarragemId = syncRes.barragemId || sanitizedFormData.barragemId;
+      if (isFinalizing) {
+        const synced = await syncNotificaEntitiesToAdministra(formData);
+        sanitizedFormData = synced.sanitizedFormData;
+        resolvedEmpreendedorId = synced.resolvedEmpreendedorId;
+        resolvedBarragemId = synced.resolvedBarragemId;
+        resolvedBarragemIds = synced.resolvedBarragemIds;
+      }
 
       const res = await saveNotificacao({
         ...sanitizedFormData,
         id: formData.id || undefined,
         empreendedorId: resolvedEmpreendedorId,
         barragemId: resolvedBarragemId,
+        barragemIds: resolvedBarragemIds,
+        textoNotificacaoCustomizado: isTextoEdited,
         sourceSystem: sanitizedFormData.sourceSystem || CURRENT_SYSTEM_ID,
         analista: formData.analistas?.[0] || 'Sistema Local',
         numProcesso: formData.numProcesso || 'S/N',
@@ -570,27 +869,30 @@ Cuiabá/MT, ${formattedDate}.${analystsText}`;
         return;
       }
 
-      if (res.data) {
-        setFormData(prev => ({
-          ...prev,
-          id: res.data.id,
-          status,
-          empreendedorId: resolvedEmpreendedorId,
-          barragemId: resolvedBarragemId,
-          sourceSystem: res.data.sourceSystem || CURRENT_SYSTEM_ID,
-        }));
-      }
+      setFormData(prev => ({
+        ...prev,
+        id: res.data?.id || prev.id,
+        status,
+        empreendedorId: resolvedEmpreendedorId,
+        barragemId: resolvedBarragemId,
+        barragemIds: resolvedBarragemIds,
+        barragens: sanitizedFormData.barragens,
+        sourceSystem: res.data?.sourceSystem || CURRENT_SYSTEM_ID,
+      }));
 
-      toast.success(`Notificação salva como ${status}!`);
+      toast.success(
+        isFinalizing
+          ? `Notificação concluída e ${resolvedBarragemIds.length || 1} barragem(ns) sincronizada(s) no Administra!`
+          : 'Rascunho salvo localmente (dados não vinculados mantidos temporariamente no rascunho).'
+      );
       
-      await refreshData();
+      await Promise.all([refreshData(), isFinalizing ? refreshEcosystem() : Promise.resolve()]);
       
       if (status === 'Concluído') {
-        // Para concluído, pergunta se quer voltar
         setConfirmModal({
           isOpen: true,
           title: 'Notificação Concluída!',
-          message: 'O documento foi salvo com sucesso no sistema. Deseja voltar para o painel de controle?',
+          message: 'O documento foi salvo com sucesso no sistema e todas as barragens foram gravadas no Administra. Deseja voltar para o painel de controle?',
           variant: 'info',
           confirmLabel: 'Voltar ao Painel',
           cancelLabel: 'Continuar aqui',
@@ -599,7 +901,6 @@ Cuiabá/MT, ${formattedDate}.${analystsText}`;
           }
         });
       }
-      // Se for rascunho, apenas mantém na página com o toast que já apareceu
     } catch (error) {
       console.error('Erro inesperado ao salvar notificação:', error);
       toast.error('Erro inesperado ao salvar.');
@@ -650,55 +951,55 @@ Cuiabá/MT, ${formattedDate}.${analystsText}`;
   };
 
   return (
-    <div className="p-4 md:p-6 max-w-5xl mx-auto pb-20 w-full">
+    <div className="p-3 sm:p-4 md:p-6 max-w-5xl mx-auto pb-20 w-full">
       {/* Top Bar */}
-      <div className="flex flex-col md:flex-row justify-between items-start md:items-center border-b border-slate-200 pb-4 mb-6 sticky top-0 bg-slate-50 z-30 gap-4">
-        <div className="flex items-center gap-4">
-          <button onClick={onBack} className="p-2 hover:bg-slate-100 rounded-full text-slate-500 transition-colors">
-            <ArrowLeft size={24} />
+      <div className="flex flex-col md:flex-row justify-between items-start md:items-center border-b border-slate-200 pb-4 mb-5 static md:sticky md:top-[61px] bg-slate-50/95 backdrop-blur-sm z-20 gap-3 pt-1">
+        <div className="flex items-center gap-3 sm:gap-4 min-w-0">
+          <button onClick={onBack} className="p-2 hover:bg-slate-100 rounded-full text-slate-500 transition-colors shrink-0">
+            <ArrowLeft size={22} />
           </button>
-          <div>
-            <h1 className="text-xl font-bold text-slate-800">Nova Notificação</h1>
-            <p className="text-xs text-slate-500">Preencha os dados para gerar o documento oficial</p>
+          <div className="min-w-0">
+            <h1 className="text-lg sm:text-xl font-bold text-slate-800 truncate">Nova Notificação</h1>
+            <p className="text-xs text-slate-500 truncate">Preencha os dados para gerar o documento oficial</p>
           </div>
         </div>
-        <div className="flex flex-wrap gap-2 w-full md:w-auto">
+        <div className="grid grid-cols-2 sm:flex sm:flex-wrap gap-2 w-full md:w-auto">
           {!readOnly && (
             <>
               <button 
                 onClick={handleClear}
-                className="flex-1 md:flex-none flex items-center justify-center gap-2 px-3 py-2 bg-white border border-slate-300 rounded-lg text-xs font-bold text-slate-600 hover:bg-slate-50 transition-all shadow-sm"
+                className="flex items-center justify-center gap-1.5 px-3 py-2 bg-white border border-slate-300 rounded-xl text-xs font-bold text-slate-600 hover:bg-slate-50 transition-all shadow-sm"
               >
-                <Eraser size={16} /> Limpar
+                <Eraser size={15} /> Limpar
               </button>
               <button 
                 onClick={() => handleSave('Rascunho')}
                 disabled={isSaving}
-                className="flex-1 md:flex-none flex items-center justify-center gap-2 px-3 py-2 bg-white border border-slate-300 rounded-lg text-xs font-bold text-slate-700 hover:bg-slate-50 transition-all shadow-sm disabled:opacity-50 disabled:cursor-not-allowed"
+                className="flex items-center justify-center gap-1.5 px-3 py-2 bg-white border border-slate-300 rounded-xl text-xs font-bold text-slate-700 hover:bg-slate-50 transition-all shadow-sm disabled:opacity-50 disabled:cursor-not-allowed"
               >
-                {isSaving ? <Loader2 size={16} className="animate-spin" /> : <Save size={16} />} Salvar Rascunho
+                {isSaving ? <Loader2 size={15} className="animate-spin" /> : <Save size={15} />} Salvar Rascunho
               </button>
               <button 
                 onClick={() => handleSave('Concluído')}
                 disabled={isSaving}
-                className="flex-1 md:flex-none flex items-center justify-center gap-2 px-3 py-2 bg-emerald-600 text-white rounded-lg text-xs font-bold hover:bg-emerald-700 transition-all shadow-md shadow-emerald-200 disabled:opacity-50 disabled:cursor-not-allowed"
+                className="col-span-2 sm:col-span-1 flex items-center justify-center gap-1.5 px-3 py-2 bg-emerald-600 text-white rounded-xl text-xs font-bold hover:bg-emerald-700 transition-all shadow-md shadow-emerald-200 disabled:opacity-50 disabled:cursor-not-allowed"
               >
-                {isSaving ? <Loader2 size={16} className="animate-spin" /> : <CheckCircle size={16} />} Concluir
+                {isSaving ? <Loader2 size={15} className="animate-spin" /> : <CheckCircle size={15} />} Concluir
               </button>
             </>
           )}
           <button 
             onClick={handleDownloadPDF}
-            className="flex-1 md:flex-none flex items-center justify-center gap-2 px-3 py-2 bg-rose-600 text-white rounded-lg text-xs font-bold hover:bg-rose-700 transition-all shadow-md shadow-rose-200"
+            className="flex items-center justify-center gap-1.5 px-3 py-2 bg-rose-600 text-white rounded-xl text-xs font-bold hover:bg-rose-700 transition-all shadow-md shadow-rose-200"
             title="Exportar Notificação em PDF"
           >
-            <FileDown size={16} /> Salvar PDF
+            <FileDown size={15} /> Salvar PDF
           </button>
           <button 
             onClick={handleDownloadDocx}
-            className="flex-1 md:flex-none flex items-center justify-center gap-2 px-3 py-2 bg-blue-600 text-white rounded-lg text-xs font-bold hover:bg-blue-700 transition-all shadow-md shadow-blue-200"
+            className="flex items-center justify-center gap-1.5 px-3 py-2 bg-blue-600 text-white rounded-xl text-xs font-bold hover:bg-blue-700 transition-all shadow-md shadow-blue-200"
           >
-            <FileDown size={16} /> Salvar Docx
+            <FileDown size={15} /> Salvar Docx
           </button>
         </div>
       </div>
@@ -758,8 +1059,15 @@ Cuiabá/MT, ${formattedDate}.${analystsText}`;
           selectedBarragemId={formData.barragemId}
           cpfCnpj={formData.documentoIdentificacao}
           nomeBarragem={formData.nomeFantasia || formData.barragens?.[0]?.nome}
+          barragemCount={formData.barragens?.length || 1}
+          onSaveToAdministra={handleSaveOnlyToAdministra}
+          savingToAdministra={savingAdministra}
+          onRegisterEmpreendedor={handleRegisterEmpreendedor}
+          onRegisterBarragem={() => handleRegisterBarragem()}
+          hasPendingEmpreendedor={hasEmpreendedorManual && !formData.empreendedorId}
+          hasPendingBarragem={pendingBarragensIndices.length > 0}
+          registeringEntity={registeringEntity}
           onSelectEmpreendedor={(emp: EmpreendedorCanonico) => {
-            setIsTextoEdited(false);
             setFormData(prev => ({
               ...prev,
               empreendedorId: emp.id,
@@ -780,29 +1088,30 @@ Cuiabá/MT, ${formattedDate}.${analystsText}`;
             }));
           }}
           onSelectBarragem={(bar: BarragemCanonica) => {
-            setIsTextoEdited(false);
             setFormData(prev => {
-              const gmsToStr = (c?: { g: string; m: string; s: string }) =>
-                c && (c.g || c.m || c.s) ? `${c.g || '00'}°${c.m || '00'}'${c.s || '00'}"` : '';
-              const latStr = gmsToStr(bar.coordenadasGMS?.lat);
-              const longStr = gmsToStr(bar.coordenadasGMS?.long);
+              const { lat: latStr, long: longStr } = coordenadasGmsToStrings(bar.coordenadasGMS);
               const nextBarragens = [...(prev.barragens || [])];
+              const targetIdx = activeBarragemIndex < nextBarragens.length ? activeBarragemIndex : 0;
               if (nextBarragens.length > 0) {
-                nextBarragens[0] = {
-                  ...nextBarragens[0],
-                  nome: bar.nomeBarragem || nextBarragens[0].nome,
-                  lat: latStr || nextBarragens[0].lat,
-                  long: longStr || nextBarragens[0].long,
+                nextBarragens[targetIdx] = {
+                  ...nextBarragens[targetIdx],
+                  id: bar.id,
+                  barragemId: bar.id,
+                  nome: bar.nomeBarragem || nextBarragens[targetIdx].nome,
+                  codigoSnisb: bar.codigoSnisb || nextBarragens[targetIdx].codigoSnisb,
+                  municipio: bar.municipio || nextBarragens[targetIdx].municipio,
+                  lat: latStr || nextBarragens[targetIdx].lat,
+                  long: longStr || nextBarragens[targetIdx].long,
                 };
               }
               return {
                 ...prev,
-                barragemId: bar.id,
+                barragemId: targetIdx === 0 ? bar.id : (prev.barragemId || bar.id),
                 empreendedorId: bar.empreendedorId || prev.empreendedorId,
-                nomeFantasia: bar.nomeBarragem || prev.nomeFantasia,
+                nomeFantasia: targetIdx === 0 ? (bar.nomeBarragem || prev.nomeFantasia) : prev.nomeFantasia,
                 municipioEmpreendimento: bar.municipio || prev.municipioEmpreendimento,
-                lat: latStr || prev.lat,
-                long: longStr || prev.long,
+                lat: targetIdx === 0 ? (latStr || prev.lat) : prev.lat,
+                long: targetIdx === 0 ? (longStr || prev.long) : prev.long,
                 barragens: nextBarragens,
               };
             });
@@ -812,6 +1121,8 @@ Cuiabá/MT, ${formattedDate}.${analystsText}`;
               ...prev,
               empreendedorId: undefined,
               barragemId: undefined,
+              barragemIds: undefined,
+              barragens: (prev.barragens || []).map((b) => ({ ...b, barragemId: undefined })),
             }));
           }}
         />
@@ -960,6 +1271,35 @@ Cuiabá/MT, ${formattedDate}.${analystsText}`;
                         />
                       </div>
                     </div>
+                    {!readOnly && (
+                      <div className="md:col-span-2 pt-3 border-t border-slate-200/70 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
+                        {formData.empreendedorId ? (
+                          <span className="inline-flex items-center gap-1.5 text-xs font-bold text-emerald-700">
+                            <CheckCircle2 size={14} className="text-emerald-600 shrink-0" />
+                            Empreendedor cadastrado e vinculado à base Administra.
+                          </span>
+                        ) : (
+                          <>
+                            <span className="text-xs font-semibold text-amber-800">
+                              Empreendedor não vinculado no Administra (temporário apenas no rascunho).
+                            </span>
+                            <button
+                              type="button"
+                              disabled={registeringEntity !== null}
+                              onClick={() => void handleRegisterEmpreendedor()}
+                              className="px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-black flex items-center justify-center gap-1.5 transition-colors shadow-sm disabled:opacity-50 cursor-pointer shrink-0"
+                            >
+                              {registeringEntity === 'empreendedor' ? (
+                                <Loader2 size={14} className="animate-spin" />
+                              ) : (
+                                <PlusCircle size={14} />
+                              )}
+                              Cadastrar Empreendedor na Base de Dados
+                            </button>
+                          </>
+                        )}
+                      </div>
+                    )}
                   </div>
                 </div>
               </motion.div>
@@ -1130,8 +1470,39 @@ Cuiabá/MT, ${formattedDate}.${analystsText}`;
                                         onChange={(e) => handleBarragemChange(index, 'nome', e.target.value)}
                                         placeholder={`Nome / Identificação da Barragem ${index + 1}`}
                                         disabled={readOnly}
-                                        className="text-xs font-bold px-2.5 py-1 bg-slate-50 border border-slate-200 rounded-lg text-slate-700 focus:bg-white focus:border-emerald-500 outline-none w-48 sm:w-64"
+                                        className="text-xs font-bold px-2.5 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-slate-700 focus:bg-white focus:border-emerald-500 outline-none w-full sm:w-56"
                                       />
+
+                                      <span
+                                        className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-black uppercase ${
+                                          barragem.barragemId
+                                            ? 'bg-emerald-100 text-emerald-800'
+                                            : 'bg-amber-100 text-amber-800'
+                                        }`}
+                                      >
+                                        <Database size={10} />
+                                        {barragem.barragemId ? 'Administra' : 'Não cadastrada'}
+                                      </span>
+
+                                      {!readOnly && !barragem.barragemId && (
+                                        <button
+                                          type="button"
+                                          disabled={registeringEntity !== null}
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            void handleRegisterBarragem(index);
+                                          }}
+                                          className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-[11px] font-black inline-flex items-center gap-1.5 transition-colors shadow-xs disabled:opacity-50 cursor-pointer"
+                                        >
+                                          {registeringEntity === 'barragem' &&
+                                          (registeringBarragemIndex === index || registeringBarragemIndex === null) ? (
+                                            <Loader2 size={12} className="animate-spin" />
+                                          ) : (
+                                            <PlusCircle size={12} />
+                                          )}
+                                          Cadastrar Barragem na Base de Dados
+                                        </button>
+                                      )}
                                     </div>
 
                                     {/* Botões de Ação Hierárquica e Exclusão */}
@@ -1181,7 +1552,29 @@ Cuiabá/MT, ${formattedDate}.${analystsText}`;
                                     )}
                                   </div>
 
-                                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                                  {!readOnly && registraBarragens.length > 0 && (
+                                    <div className="mb-3" onClick={(e) => e.stopPropagation()}>
+                                      <select
+                                        value={barragem.barragemId || ''}
+                                        onChange={(e) => handleAssignAdministraBarragemToRow(index, e.target.value)}
+                                        className="w-full px-3 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-[11px] font-bold text-slate-700 focus:border-emerald-500 outline-none"
+                                      >
+                                        <option value="">-- Cadastrar como nova barragem no Administra ou selecionar existente --</option>
+                                        {(formData.empreendedorId
+                                          ? registraBarragens.filter((b) => !b.empreendedorId || b.empreendedorId === formData.empreendedorId)
+                                          : registraBarragens
+                                        )
+                                          .slice(0, 60)
+                                          .map((b) => (
+                                            <option key={b.id} value={b.id}>
+                                              {b.nomeBarragem} {b.codigoSnisb ? `[SNISB: ${b.codigoSnisb}]` : ''} — {b.municipio || 'MT'}
+                                            </option>
+                                          ))}
+                                      </select>
+                                    </div>
+                                  )}
+
+                                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                                     <div>
                                       <label className="block text-[11px] font-bold text-slate-500 uppercase mb-1">
                                         Latitude (S) — Barragem #{index + 1} {isSelected && '(Ativa)'}
@@ -1215,6 +1608,20 @@ Cuiabá/MT, ${formattedDate}.${analystsText}`;
                                         onFocus={() => setActiveBarragemIndex(index)}
                                         onChange={(e) => handleBarragemChange(index, 'long', formatGMS(e.target.value))}
                                         placeholder={`56°00'00,00"`}
+                                        disabled={readOnly}
+                                      />
+                                    </div>
+                                    <div>
+                                      <label className="block text-[11px] font-bold text-slate-500 uppercase mb-1">
+                                        Código SNISB (Opcional)
+                                      </label>
+                                      <input
+                                        type="text"
+                                        className="w-full px-3.5 py-2.5 rounded-xl border-2 bg-slate-50/70 border-slate-200 focus:bg-white focus:border-emerald-600 font-bold text-slate-700 transition-all outline-none text-sm"
+                                        value={barragem.codigoSnisb || ''}
+                                        onFocus={() => setActiveBarragemIndex(index)}
+                                        onChange={(e) => handleBarragemChange(index, 'codigoSnisb', e.target.value)}
+                                        placeholder="Ex: 12345"
                                         disabled={readOnly}
                                       />
                                     </div>

@@ -731,10 +731,10 @@ export const MTMap = React.memo<MTMapProps>(({
         <div ref={mapRef} className="w-full h-full rounded-xl z-0 border border-slate-200 shadow-inner" />
         
         <div className={`
-          absolute bottom-4 left-4 z-[1000] transition-all duration-500 ease-in-out
+          absolute bottom-4 left-3 sm:left-4 z-[1000] transition-all duration-500 ease-in-out
           ${showLegend ? 'translate-y-0 opacity-100' : 'translate-y-2 md:translate-y-0 opacity-0 md:opacity-100 pointer-events-none md:pointer-events-auto'}
         `}>
-          <div className="bg-white/95 backdrop-blur-md p-3 rounded-xl shadow-2xl border border-slate-200 text-[9px] font-bold text-slate-600 uppercase tracking-widest space-y-2.5 min-w-[160px]">
+          <div className="bg-white/95 backdrop-blur-md p-3 rounded-xl shadow-2xl border border-slate-200 text-[9px] font-bold text-slate-600 uppercase tracking-widest space-y-2.5 min-w-[160px] max-w-[calc(100vw-4.5rem)] max-h-[60dvh] overflow-y-auto custom-scrollbar">
             <div className="border-b border-slate-100 pb-1.5 mb-1 text-slate-400 font-black flex items-center justify-between gap-2">
               <div className="flex items-center gap-2">
                 <MapIcon size={10} className="text-blue-500" />
@@ -755,8 +755,8 @@ export const MTMap = React.memo<MTMapProps>(({
                 >
                   Nada
                 </button>
-                <button onClick={() => setShowLegend(false)} className="md:hidden text-slate-300 hover:text-slate-600">
-                  <X size={12} />
+                <button onClick={() => setShowLegend(false)} className="md:hidden text-slate-300 hover:text-slate-600 p-1">
+                  <X size={14} />
                 </button>
               </div>
             </div>
@@ -939,7 +939,7 @@ export const MTMap = React.memo<MTMapProps>(({
         
         <button 
           onClick={() => setShowLegend(!showLegend)}
-          className="md:hidden absolute bottom-4 right-4 z-[1000] bg-white p-2 rounded-full shadow-lg border border-slate-200 text-slate-600"
+          className="md:hidden absolute bottom-4 right-4 z-[1000] bg-white min-w-[40px] min-h-[40px] flex items-center justify-center p-2.5 rounded-full shadow-lg border border-slate-200 text-slate-600"
         >
           <MapIcon size={20} />
         </button>

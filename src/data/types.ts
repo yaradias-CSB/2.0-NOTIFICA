@@ -7,6 +7,7 @@ import {
   ChangeRequestTargetType,
   EcosystemProductSummary,
   EcosystemSystemId,
+  IntegratedSystemsDataPayload,
 } from '../types/ecosystem';
 
 export interface AuditLogRecord {
@@ -51,6 +52,21 @@ export interface UserRepository {
   deleteUser(id: string): Promise<void>;
 }
 
+export interface FormBarragemSyncItem {
+  existingBarragemId?: string;
+  nomeBarragem: string;
+  codigoSnisb?: string;
+  municipio?: string;
+  usoPreponderante?: string;
+  tipoBarragem?: string;
+  coordenadasGMS?: {
+    lat: { g: string; m: string; s: string };
+    long: { g: string; m: string; s: string };
+  };
+  altura?: string;
+  volume?: string;
+}
+
 export interface FormEntitySyncInput {
   empreendedorNome?: string;
   cpfCnpj?: string;
@@ -84,27 +100,47 @@ export interface FormEntitySyncInput {
   classificacaoCRI?: string;
   portariaClassificacao?: string;
   parecerClassificacao?: string;
+  barragens?: FormBarragemSyncItem[];
+  art?: string;
   responsaveisTecnicos?: Array<{
     nome: string;
     registroProfissional?: string;
     formacaoProfissional?: string;
     cpf?: string;
+    art?: string;
   }>;
   existingEmpreendedorId?: string;
   existingBarragemId?: string;
   analista?: string;
 }
 
+export interface LinkArtRTInput {
+  rtId?: string;
+  rtNome: string;
+  registroProfissional?: string;
+  formacaoProfissional?: string;
+  cpf?: string;
+  art: string;
+  barragemId?: string;
+  barragemNome?: string;
+  empreendedorId?: string;
+  empreendedorNome?: string;
+  processo?: string;
+}
+
 export interface FormEntitySyncResult {
   empreendedorId?: string;
   barragemId?: string;
+  barragemIds: string[];
   responsavelTecnicoIds: string[];
   createdEmpreendedor: boolean;
   createdBarragem: boolean;
+  createdBarragemCount: number;
   createdRTCount: number;
 }
 
 export interface AdministraRegistryRepository {
+  invalidateCache?(): void;
   getEmpreendedores(): Promise<EmpreendedorCanonico[]>;
   saveEmpreendedor(
     data: Omit<EmpreendedorCanonico, 'id' | 'createdAt' | 'updatedAt' | 'registryOwnerSystem' | 'cpfCnpjNormalizado'> & { id?: string },
@@ -124,6 +160,7 @@ export interface AdministraRegistryRepository {
     data: Omit<ResponsavelTecnicoCanonico, 'id' | 'createdAt' | 'updatedAt' | 'registryOwnerSystem'> & { id?: string },
     options?: { bypassOwnershipForApprovedRequest?: boolean; allowEditFromForm?: boolean }
   ): Promise<ResponsavelTecnicoCanonico>;
+  linkArtToRT(input: LinkArtRTInput): Promise<ResponsavelTecnicoCanonico>;
   deleteResponsavelTecnico(id: string): Promise<void>;
 
   syncFromFormSubmission(input: FormEntitySyncInput): Promise<FormEntitySyncResult>;
@@ -149,6 +186,7 @@ export interface EcosystemFederationRepository {
   ): Promise<ChangeRequest>;
 
   getExternalProducts(): Promise<EcosystemProductSummary[]>;
+  getIntegratedSystemsData(system?: EcosystemSystemId): Promise<IntegratedSystemsDataPayload>;
   findProductsByEntity(
     localProducts: EcosystemProductSummary[],
     criteria: {
@@ -160,3 +198,4 @@ export interface EcosystemFederationRepository {
     }
   ): Promise<EcosystemProductSummary[]>;
 }
+

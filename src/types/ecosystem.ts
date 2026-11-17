@@ -82,10 +82,24 @@ export interface BarragemCanonica {
   updatedAt: string;
 }
 
+export interface ArtVinculoCanonico {
+  id?: string;
+  art: string;
+  barragemId?: string;
+  barragemNome?: string;
+  empreendedorId?: string;
+  empreendedorNome?: string;
+  processo?: string;
+  situacao?: string;
+  createdAt?: string;
+}
+
 export interface ResponsavelTecnicoCanonico {
   id: string;
   nome: string;
   registroProfissional?: string;
+  art?: string;
+  artsVinculadas?: ArtVinculoCanonico[];
   formacaoProfissional?: string;
   cpf?: string;
   telefone?: string;
@@ -146,3 +160,24 @@ export interface EcosystemSystemConnectionStatus {
   isCurrentSystem: boolean;
   canWriteDirectly: boolean;
 }
+
+export interface EcosystemRemoteSystemDiagnostic {
+  systemId: EcosystemSystemId;
+  remoteConfigured: boolean;
+  reachable: boolean;
+  authDenied: boolean;
+  empreendedoresCount: number;
+  barragensCount: number;
+  rtsCount: number;
+  productsCount: number;
+}
+
+export interface IntegratedSystemsDataPayload {
+  empreendedores: EmpreendedorCanonico[];
+  barragens: BarragemCanonica[];
+  responsaveisTecnicos: ResponsavelTecnicoCanonico[];
+  products: EcosystemProductSummary[];
+  diagnostics: Record<EcosystemSystemId, EcosystemRemoteSystemDiagnostic>;
+  fetchedAt: string;
+}
+

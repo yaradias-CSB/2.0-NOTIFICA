@@ -64,6 +64,7 @@ const App: React.FC = () => {
   const [editingDocument, setEditingDocument] = useState<AppDocument | null>(null);
   const [isViewOnly, setIsViewOnly] = useState(false);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
+  const [isQuickCreateOpen, setIsQuickCreateOpen] = useState(false);
   const [isSidebarManualCollapsed, setIsSidebarManualCollapsed] = useState(false);
   const [showBackToTop, setShowBackToTop] = useState(false);
   const [returnView, setReturnView] = useState<'dashboard' | 'list' | 'controle_notificacoes'>('dashboard');
@@ -128,6 +129,7 @@ const App: React.FC = () => {
     setIsViewOnly(viewOnly);
     setCurrentView(view);
     setIsMobileMenuOpen(false);
+    setIsQuickCreateOpen(false);
   };
 
   const handleOpenDocumentFromSearch = (doc: AppDocument, viewOnly: boolean = false) => {
@@ -143,7 +145,7 @@ const App: React.FC = () => {
   };
 
   return (
-    <div className="min-h-screen min-h-[100dvh] flex flex-col md:flex-row bg-slate-50 font-sans text-slate-900 overflow-x-hidden">
+    <div className="min-h-screen min-h-[100dvh] flex flex-col md:flex-row bg-slate-50 font-sans text-slate-900 overflow-x-clip">
       
       {/* Global Loading Overlay */}
       {isDataLoading && (
@@ -156,32 +158,43 @@ const App: React.FC = () => {
       )}
 
       {/* Mobile Header */}
-      <header className="md:hidden bg-slate-900 text-white p-4 flex items-center justify-between sticky top-0 z-[60] shadow-xl border-b border-slate-800">
-         <div className="flex items-center gap-3">
-            <div className="bg-white p-1 rounded-lg overflow-hidden flex items-center justify-center w-10 h-10 shadow-lg">
-                <img src="https://lh3.googleusercontent.com/d/11OtFjZyub-hYsCvNr8N88CHVtcGM1QKU" alt="Logo" className="w-8 h-8 object-contain" referrerPolicy="no-referrer" />
+      <header className="md:hidden bg-slate-900 text-white px-3.5 h-14 flex items-center justify-between sticky top-0 z-[60] shadow-xl border-b border-slate-800">
+         <div className="flex items-center gap-2.5 min-w-0">
+            <div className="bg-white p-1 rounded-lg overflow-hidden flex items-center justify-center w-9 h-9 shadow-lg shrink-0">
+                <img src="https://lh3.googleusercontent.com/d/11OtFjZyub-hYsCvNr8N88CHVtcGM1QKU" alt="Logo" className="w-7 h-7 object-contain" referrerPolicy="no-referrer" />
             </div>
-            <div className="flex flex-col">
-              <span className="text-[7px] font-black text-emerald-400 uppercase tracking-widest leading-none mb-1">Acesso Direto</span>
-              <span className="font-black text-sm tracking-tighter leading-none"><span className="text-emerald-500">Notifica</span> CSB</span>
-              <span className="text-[8px] font-bold uppercase tracking-widest text-emerald-500/80">SEMA/MT</span>
+            <div className="flex flex-col min-w-0">
+              <span className="font-black text-sm tracking-tighter leading-none truncate"><span className="text-emerald-500">Notifica</span> CSB</span>
+              <span className="text-[9px] font-bold uppercase tracking-widest text-emerald-400/90 leading-tight mt-0.5 truncate">SEMA/MT • CSB</span>
             </div>
          </div>
-         <div className="flex items-center gap-2">
+         <div className="flex items-center gap-1.5 shrink-0">
            <button 
+             type="button"
+             onClick={() => handleNavigate('form')}
+             className="px-2.5 min-h-[38px] bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-[11px] font-black flex items-center gap-1 transition-all active:scale-95"
+             aria-label="Novo Parecer"
+           >
+             <Plus size={14} />
+             <span>Novo</span>
+           </button>
+           <button 
+             type="button"
              onClick={() => {
-               const searchInput = document.querySelector('input[placeholder*="Buscar por documentos"]') as HTMLInputElement;
+               const searchInput = document.querySelector('input[placeholder*="Buscar"]') as HTMLInputElement;
                searchInput?.focus();
+               searchInput?.scrollIntoView({ behavior: 'smooth', block: 'center' });
              }} 
-             className="p-2.5 bg-slate-800/50 hover:bg-slate-800 rounded-xl transition-all active:scale-95 text-slate-300 hover:text-white"
+             className="min-w-[40px] min-h-[40px] flex items-center justify-center bg-slate-800/60 hover:bg-slate-800 rounded-xl transition-all active:scale-95 text-slate-200 hover:text-white"
              aria-label="Buscar documentos"
              title="Buscar no sistema"
            >
               <Search size={18} />
            </button>
            <button 
+             type="button"
              onClick={() => setIsMobileMenuOpen(!isMobileMenuOpen)} 
-             className="p-2.5 bg-slate-800/50 hover:bg-slate-800 rounded-xl transition-all active:scale-95"
+             className="min-w-[40px] min-h-[40px] flex items-center justify-center bg-slate-800/60 hover:bg-slate-800 rounded-xl transition-all active:scale-95"
              aria-label="Toggle menu"
            >
               {isMobileMenuOpen ? <X size={20}/> : <Menu size={20}/>}
@@ -200,10 +213,10 @@ const App: React.FC = () => {
       {/* Sidebar */}
       <aside 
         className={`
-          fixed inset-y-0 left-0 z-[70] bg-slate-900 text-white flex flex-col transition-all duration-300 ease-in-out shadow-2xl md:shadow-xl border-r border-slate-800
+          fixed inset-y-0 left-0 z-[70] bg-slate-900 text-white flex flex-col transition-all duration-300 ease-in-out shadow-2xl md:shadow-xl border-r border-slate-800 overscroll-contain
           ${isMobileMenuOpen ? 'translate-x-0' : '-translate-x-full'}
           md:translate-x-0
-          ${!isSidebarCollapsed ? 'w-72 md:w-64' : 'w-72 md:w-20'}
+          ${!isSidebarCollapsed ? 'w-[82vw] max-w-72 md:w-64' : 'w-[82vw] max-w-72 md:w-20'}
         `}
       >
         {/* Toggle Button (Desktop Only) */}
@@ -436,11 +449,11 @@ const App: React.FC = () => {
         className={`
           flex-1 flex flex-col min-h-screen min-h-[100dvh] transition-all duration-300
           ${!isSidebarCollapsed ? 'md:ml-64' : 'md:ml-20'}
-          w-full overflow-x-hidden
+          w-full min-w-0 overflow-x-clip
         `}
       >
         {/* System Global Header Bar */}
-        <header className="sticky top-0 z-40 bg-white/95 backdrop-blur-md border-b border-slate-200/90 px-4 sm:px-6 md:px-8 py-3 flex flex-col md:flex-row md:items-center justify-between gap-3 shadow-xs">
+        <header className="relative md:sticky md:top-0 z-40 bg-white/95 backdrop-blur-md border-b border-slate-200/90 px-3 sm:px-6 md:px-8 py-2.5 sm:py-3 flex flex-col md:flex-row md:items-center justify-between gap-2.5 sm:gap-3 shadow-xs">
           {/* Current view indicator / Breadcrumbs */}
           <div className="flex items-center justify-between gap-3 shrink-0">
             <div className="flex items-center gap-2.5">
@@ -508,42 +521,45 @@ const App: React.FC = () => {
             </button>
 
             {/* Quick Create Dropdown */}
-            <div className="relative group">
+            <div className="relative">
               <button
                 type="button"
+                onClick={() => setIsQuickCreateOpen((prev) => !prev)}
                 className="flex items-center gap-1.5 px-3.5 py-2 text-xs font-black uppercase tracking-wider text-white bg-emerald-600 hover:bg-emerald-700 rounded-xl transition-all shadow-sm hover:shadow-emerald-600/20 active:scale-95 cursor-pointer"
               >
                 <Plus size={15} />
                 <span>Novo</span>
-                <ChevronDown size={14} className="opacity-70 group-hover:rotate-180 transition-transform" />
+                <ChevronDown size={14} className={`opacity-70 transition-transform ${isQuickCreateOpen ? 'rotate-180' : ''}`} />
               </button>
 
-              <div className="absolute right-0 top-full mt-1.5 w-52 bg-white rounded-2xl shadow-xl border border-slate-200 py-1.5 hidden group-hover:block hover:block z-50 animate-in fade-in-0 zoom-in-95">
-                <button
-                  type="button"
-                  onClick={() => handleNavigate('form')}
-                  className="w-full px-3.5 py-2 text-left text-xs font-bold text-slate-700 hover:text-emerald-700 hover:bg-emerald-50 flex items-center gap-2.5 transition-colors cursor-pointer"
-                >
-                  <ClipboardCheck size={15} className="text-emerald-600" />
-                  <span>Novo Parecer</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => handleNavigate('oficio')}
-                  className="w-full px-3.5 py-2 text-left text-xs font-bold text-slate-700 hover:text-amber-700 hover:bg-amber-50 flex items-center gap-2.5 transition-colors cursor-pointer"
-                >
-                  <FileWarning size={15} className="text-amber-600" />
-                  <span>Novo Ofício</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => handleNavigate('notificacao')}
-                  className="w-full px-3.5 py-2 text-left text-xs font-bold text-slate-700 hover:text-violet-700 hover:bg-violet-50 flex items-center gap-2.5 transition-colors cursor-pointer"
-                >
-                  <Bell size={15} className="text-violet-600" />
-                  <span>Nova Notificação</span>
-                </button>
-              </div>
+              {isQuickCreateOpen && (
+                <div className="absolute right-0 top-full mt-1.5 w-56 bg-white rounded-2xl shadow-xl border border-slate-200 py-1.5 z-50 animate-in fade-in-0 zoom-in-95">
+                  <button
+                    type="button"
+                    onClick={() => handleNavigate('form')}
+                    className="w-full px-3.5 py-2.5 text-left text-xs font-bold text-slate-700 hover:text-emerald-700 hover:bg-emerald-50 flex items-center gap-2.5 transition-colors cursor-pointer"
+                  >
+                    <ClipboardCheck size={15} className="text-emerald-600" />
+                    <span>Novo Parecer</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleNavigate('oficio')}
+                    className="w-full px-3.5 py-2.5 text-left text-xs font-bold text-slate-700 hover:text-amber-700 hover:bg-amber-50 flex items-center gap-2.5 transition-colors cursor-pointer"
+                  >
+                    <FileWarning size={15} className="text-amber-600" />
+                    <span>Novo Ofício</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleNavigate('notificacao')}
+                    className="w-full px-3.5 py-2.5 text-left text-xs font-bold text-slate-700 hover:text-violet-700 hover:bg-violet-50 flex items-center gap-2.5 transition-colors cursor-pointer"
+                  >
+                    <Bell size={15} className="text-violet-600" />
+                    <span>Nova Notificação</span>
+                  </button>
+                </div>
+              )}
             </div>
           </div>
         </header>
@@ -580,7 +596,7 @@ const App: React.FC = () => {
           ) : currentView === 'list' ? (
             <ParecerList 
               onEditParecer={(p) => {
-                if (p.tipo_documento === 'Parecer Técnico') {
+                if (p.tipo_documento?.startsWith('Parecer')) {
                   handleNavigate('form', p);
                 } else if (p.tipo_documento === 'Notificação') {
                   setReturnView('list');
@@ -590,7 +606,7 @@ const App: React.FC = () => {
                 }
               }}
               onViewParecer={(p) => {
-                if (p.tipo_documento === 'Parecer Técnico') {
+                if (p.tipo_documento?.startsWith('Parecer')) {
                   handleNavigate('form', p, true);
                 } else if (p.tipo_documento === 'Notificação') {
                   setReturnView('list');

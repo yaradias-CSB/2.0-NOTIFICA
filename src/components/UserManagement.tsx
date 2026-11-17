@@ -148,10 +148,10 @@ export const UserManagement: React.FC = () => {
   );
 
   return (
-    <div className="p-6 md:p-12 max-w-[1200px] mx-auto w-full animate-fade-in">
-      <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-6 mb-12">
+    <div className="p-4 sm:p-6 md:p-12 max-w-[1200px] mx-auto w-full animate-fade-in">
+      <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 sm:gap-6 mb-8 sm:mb-12">
         <div>
-          <h1 className="text-4xl font-black text-slate-900 tracking-tight mb-2">
+          <h1 className="text-2xl sm:text-4xl font-black text-slate-900 tracking-tight mb-1.5 sm:mb-2">
             Gestão de <span className="text-emerald-600">Usuários</span>
           </h1>
           <div className="flex items-center gap-2">
@@ -321,11 +321,11 @@ export const UserManagement: React.FC = () => {
 
       {/* User Modal */}
       {isModalOpen && (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm animate-in fade-in duration-300">
-          <div className="bg-white w-full max-w-md rounded-[2.5rem] shadow-2xl overflow-hidden animate-in zoom-in-95 duration-300">
-            <div className="p-8 border-b border-slate-100 flex items-center justify-between bg-slate-50/50">
+        <div className="fixed inset-0 z-[100] flex items-center justify-center p-3 sm:p-4 bg-slate-900/60 backdrop-blur-sm animate-in fade-in duration-300">
+          <div className="bg-white w-full max-w-md max-h-[92dvh] rounded-2xl sm:rounded-[2.5rem] shadow-2xl overflow-hidden flex flex-col animate-in zoom-in-95 duration-300">
+            <div className="p-5 sm:p-8 border-b border-slate-100 flex items-center justify-between bg-slate-50/50 shrink-0">
               <div>
-                <h2 className="text-2xl font-black text-slate-900 tracking-tight">
+                <h2 className="text-xl sm:text-2xl font-black text-slate-900 tracking-tight">
                   {modalMode === 'add' ? 'Novo' : 'Editar'} <span className="text-emerald-600">Usuário</span>
                 </h2>
                 <p className="text-slate-500 text-xs font-bold uppercase tracking-widest mt-1">Informações de acesso</p>
@@ -338,7 +338,7 @@ export const UserManagement: React.FC = () => {
               </button>
             </div>
 
-            <div className="p-8 space-y-6">
+            <div className="p-5 sm:p-8 space-y-6 overflow-y-auto flex-1">
               {error && (
                 <div className="p-4 bg-red-50 border border-red-100 text-red-600 text-sm font-medium rounded-2xl flex items-center gap-3">
                   <AlertTriangle size={18} />
@@ -380,7 +380,7 @@ export const UserManagement: React.FC = () => {
                   />
                 </div>
 
-                <div className="grid grid-cols-2 gap-4">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                   <div className="space-y-1.5">
                     <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest ml-1">Perfil</label>
                     <select 
@@ -412,7 +412,7 @@ export const UserManagement: React.FC = () => {
               </div>
             </div>
 
-            <div className="p-8 bg-slate-50/50 border-t border-slate-100 flex gap-4">
+            <div className="p-5 sm:p-8 bg-slate-50/50 border-t border-slate-100 flex gap-3 sm:gap-4 shrink-0">
               <button 
                 onClick={() => setIsModalOpen(false)}
                 className="flex-1 py-4 bg-white border border-slate-200 text-slate-600 font-bold rounded-2xl hover:bg-slate-100 transition-all"
