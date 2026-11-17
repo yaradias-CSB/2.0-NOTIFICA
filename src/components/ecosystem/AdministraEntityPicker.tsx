@@ -26,6 +26,8 @@ import {
 } from '../../types/ecosystem';
 import { normalizeDocumentNumber } from '../../lib/security';
 import { normalizeCarCode, normalizeSearchText } from '../../data/localAdministraRepository';
+import { authFetch } from '../../lib/supabase';
+import { useAuth } from '../../contexts/AuthContext';
 import { ChangeRequestModal } from './ChangeRequestModal';
 
 interface AdministraEntityPickerProps {
@@ -87,6 +89,8 @@ export const AdministraEntityPicker: React.FC<AdministraEntityPickerProps> = ({
     getProductsForEntity,
     linkArtToRT,
   } = useContext(EcosystemContext);
+  const { canEdit } = useAuth();
+  const effectiveReadOnly = readOnly || !canEdit;
 
   const [empQuery, setEmpQuery] = useState('');
   const [barQuery, setBarQuery] = useState('');
@@ -128,7 +132,7 @@ export const AdministraEntityPicker: React.FC<AdministraEntityPickerProps> = ({
         const params = new URLSearchParams();
         if (hasQuery) params.set('q', q);
         if (selectedEmpreendedorId) params.set('empreendedorId', selectedEmpreendedorId);
-        const res = await fetch(`/api/registry/search?${params.toString()}`, {
+        const res = await authFetch(`/api/registry/search?${params.toString()}`, {
           signal: controller.signal,
         });
         if (!res.ok) return;
@@ -404,7 +408,7 @@ export const AdministraEntityPicker: React.FC<AdministraEntityPickerProps> = ({
         </div>
 
         <div className="flex flex-wrap items-center gap-2 self-start sm:self-auto">
-          {!readOnly && onSaveToAdministra && (
+          {!effectiveReadOnly && onSaveToAdministra && (
             <button
               type="button"
               disabled={loading || refreshing || savingToAdministra}
@@ -417,7 +421,7 @@ export const AdministraEntityPicker: React.FC<AdministraEntityPickerProps> = ({
             </button>
           )}
 
-          {!readOnly && (
+          {!effectiveReadOnly && (
             <button
               type="button"
               disabled={loading || refreshing}
@@ -436,7 +440,7 @@ export const AdministraEntityPicker: React.FC<AdministraEntityPickerProps> = ({
             </button>
           )}
 
-          {(selectedEmpreendedorId || selectedBarragemId) && !readOnly && onClearLinks && (
+          {(selectedEmpreendedorId || selectedBarragemId) && !effectiveReadOnly && onClearLinks && (
             <button
               type="button"
               onClick={onClearLinks}
@@ -449,7 +453,7 @@ export const AdministraEntityPicker: React.FC<AdministraEntityPickerProps> = ({
       </div>
 
       {/* Pickers */}
-      {!readOnly && (
+      {!effectiveReadOnly && (
         <div className="grid grid-cols-1 gap-4">
           {/* Empreendedor Picker */}
           <div className="space-y-1.5 relative">
@@ -818,7 +822,7 @@ export const AdministraEntityPicker: React.FC<AdministraEntityPickerProps> = ({
               </span>
             </div>
           ) : (
-            !readOnly && (
+            !effectiveReadOnly && (
               <div className="flex flex-wrap items-center justify-between gap-2 w-full sm:w-auto px-3 py-2 rounded-xl text-[11px] font-bold border bg-amber-50 border-amber-200 text-amber-900">
                 <div className="flex items-center gap-2">
                   <Database size={13} className="text-amber-600 shrink-0" />
@@ -855,7 +859,7 @@ export const AdministraEntityPicker: React.FC<AdministraEntityPickerProps> = ({
               </span>
             </div>
           ) : (
-            !readOnly && (
+            !effectiveReadOnly && (
               <div className="flex flex-wrap items-center justify-between gap-2 w-full sm:w-auto px-3 py-2 rounded-xl text-[11px] font-bold border bg-amber-50 border-amber-200 text-amber-900">
                 <div className="flex items-center gap-2">
                   <Waves size={13} className="text-amber-600 shrink-0" />
@@ -884,7 +888,7 @@ export const AdministraEntityPicker: React.FC<AdministraEntityPickerProps> = ({
             )
           )}
 
-          {!readOnly && hasPendingRT && (
+          {!effectiveReadOnly && hasPendingRT && (
             <div className="flex flex-wrap items-center justify-between gap-2 w-full sm:w-auto px-3 py-2 rounded-xl text-[11px] font-bold border bg-amber-50 border-amber-200 text-amber-900">
               <div className="flex items-center gap-2">
                 <UserCheck size={13} className="text-amber-600 shrink-0" />
@@ -911,7 +915,7 @@ export const AdministraEntityPicker: React.FC<AdministraEntityPickerProps> = ({
             </div>
           )}
 
-          {!readOnly && (
+          {!effectiveReadOnly && (
             <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-[11px] font-bold bg-blue-50 border border-blue-200 text-blue-800">
               <PencilLine size={13} className="text-blue-600 shrink-0" />
               Rascunho preserva dados locais; para concluir, todos os dados usados devem estar cadastrados no Administra.
@@ -921,7 +925,7 @@ export const AdministraEntityPicker: React.FC<AdministraEntityPickerProps> = ({
       </div>
 
       {/* Optional cross-system request shortcut if originating outside Notifica */}
-      {externalLinkedRecords.length > 0 && !readOnly && (
+      {externalLinkedRecords.length > 0 && !effectiveReadOnly && (
         <div className="p-3 rounded-2xl bg-slate-50 border border-slate-200 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
           <div className="text-[11px] text-slate-600">
             <strong>Registro vinculado a outro módulo ({externalLinkedRecords.map((item) => item.label).join(' / ')}):</strong>{' '}

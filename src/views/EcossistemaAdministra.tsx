@@ -26,6 +26,7 @@ import {
 import { toast } from 'sonner';
 import { EcosystemContext } from '../contexts/EcosystemContext';
 import { DataContext } from '../contexts/DataContext';
+import { useAuth } from '../contexts/AuthContext';
 import {
   BarragemCanonica,
   ChangeRequest,
@@ -38,7 +39,7 @@ import {
   EmpreendedorCanonico,
   ResponsavelTecnicoCanonico,
 } from '../types/ecosystem';
-import { OPS_ANALISTA, OPS_MUNICIPIOS, OPS_TIPO_BARRAGEM, OPS_USO_PREPONDERANTE } from '../constants';
+import { OPS_MUNICIPIOS, OPS_TIPO_BARRAGEM, OPS_USO_PREPONDERANTE } from '../constants';
 import { formatCpfCnpj, isValidCpfCnpj, normalizeDocumentNumber } from '../lib/security';
 import { ChangeRequestModal } from '../components/ecosystem/ChangeRequestModal';
 import ConfirmModal from '../components/ui/ConfirmModal';
@@ -96,6 +97,8 @@ export const EcossistemaAdministra: React.FC = () => {
   } = useContext(EcosystemContext);
 
   const { pareceres, oficios, notificacoes } = useContext(DataContext);
+  const { user, profile, canEdit, canDelete } = useAuth();
+  const sessionReviewerName = profile?.nome || user?.email || '';
 
   const [activeTab, setActiveTab] = useState<TabId>('empreendedores');
   const [systemFilter, setSystemFilter] = useState<SystemFilter>('TODOS');
@@ -231,7 +234,6 @@ export const EcossistemaAdministra: React.FC = () => {
 
   // Review state for incoming ChangeRequests
   const [reviewingRequestId, setReviewingRequestId] = useState<string | null>(null);
-  const [reviewerName, setReviewerName] = useState('');
   const [reviewNotes, setReviewNotes] = useState('');
 
   const existingEmpKeys = useMemo(() => {
@@ -785,11 +787,15 @@ export const EcossistemaAdministra: React.FC = () => {
   };
 
   const handleReviewSubmit = async (req: ChangeRequest, decision: 'APROVADA' | 'REPROVADA') => {
-    if (!reviewerName.trim()) {
-      toast.error('Informe o nome do analista/administrador responsável pela análise.');
+    if (!canEdit) {
+      toast.error('Você não tem permissão para revisar solicitações.');
       return;
     }
-    const res = await reviewChangeRequest(req.id, decision, reviewerName.trim(), reviewNotes.trim());
+    if (!sessionReviewerName.trim()) {
+      toast.error('Usuário autenticado não identificado.');
+      return;
+    }
+    const res = await reviewChangeRequest(req.id, decision, sessionReviewerName.trim(), reviewNotes.trim());
     if (!res.success) {
       toast.error(res.message || 'Erro ao processar análise da solicitação.');
       return;
@@ -912,15 +918,17 @@ export const EcossistemaAdministra: React.FC = () => {
               <Download size={14} className={isPullingExternal ? 'animate-bounce' : ''} />
               {isPullingExternal ? 'Puxando Sistemas...' : 'Puxar dos Demais Sistemas'}
             </button>
-            <button
-              type="button"
-              onClick={handleSyncExistingLocalDocs}
-              disabled={isSyncingExisting}
-              className="px-4 py-2.5 bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded-xl text-xs font-bold flex items-center gap-2 transition-colors disabled:opacity-50"
-            >
-              <RefreshCw size={14} className={isSyncingExisting ? 'animate-spin' : ''} />
-              Sincronizar Docs do Notifica
-            </button>
+            {canEdit && (
+              <button
+                type="button"
+                onClick={handleSyncExistingLocalDocs}
+                disabled={isSyncingExisting}
+                className="px-4 py-2.5 bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded-xl text-xs font-bold flex items-center gap-2 transition-colors disabled:opacity-50"
+              >
+                <RefreshCw size={14} className={isSyncingExisting ? 'animate-spin' : ''} />
+                Sincronizar Docs do Notifica
+              </button>
+            )}
             <button
               type="button"
               onClick={() => refreshEcosystem()}
@@ -1159,7 +1167,7 @@ export const EcossistemaAdministra: React.FC = () => {
               />
             </div>
 
-            {unimportedCountInTab > 0 && activeTab !== 'integracao' && (
+            {canEdit && unimportedCountInTab > 0 && activeTab !== 'integracao' && (
               <button
                 type="button"
                 onClick={handleBatchImportTab}
@@ -1170,7 +1178,7 @@ export const EcossistemaAdministra: React.FC = () => {
               </button>
             )}
 
-            {activeTab === 'empreendedores' && (
+            {canEdit && activeTab === 'empreendedores' && (
               <button
                 type="button"
                 onClick={openNewEmpreendedor}
@@ -1179,7 +1187,7 @@ export const EcossistemaAdministra: React.FC = () => {
                 <Plus size={15} /> Novo Empreendedor
               </button>
             )}
-            {activeTab === 'barragens' && (
+            {canEdit && activeTab === 'barragens' && (
               <button
                 type="button"
                 onClick={openNewBarragem}
@@ -1188,7 +1196,7 @@ export const EcossistemaAdministra: React.FC = () => {
                 <Plus size={15} /> Nova Barragem
               </button>
             )}
-            {activeTab === 'rts' && (
+            {canEdit && activeTab === 'rts' && (
               <button
                 type="button"
                 onClick={openNewRT}
@@ -1402,63 +1410,67 @@ export const EcossistemaAdministra: React.FC = () => {
                         </button>
                       </div>
 
-                      <div className="flex items-center gap-2">
-                        {isExternalPreview ? (
-                          <button
-                            type="button"
-                            onClick={async () => {
-                              const res = await importEmpreendedorToAdministra(emp);
-                              if (!res.success) toast.error(res.message || 'Erro ao puxar empreendedor.');
-                              else toast.success(`"${emp.nome}" puxado e salvo na base central do Administra!`);
-                            }}
-                            className="px-3 py-1.5 rounded-xl bg-sky-600 hover:bg-sky-700 text-white text-[11px] font-black uppercase tracking-wider flex items-center gap-1.5"
-                          >
-                            <Download size={13} /> {alreadyInAdministra ? 'Atualizar no Administra' : 'Puxar para Administra'}
-                          </button>
-                        ) : editable ? (
-                          <>
+                      {canEdit && (
+                        <div className="flex items-center gap-2">
+                          {isExternalPreview ? (
                             <button
                               type="button"
-                              onClick={() => openEditEmpreendedor(emp)}
-                              className="px-3 py-1.5 rounded-xl border border-slate-200 hover:bg-slate-50 text-slate-700 text-[11px] font-bold flex items-center gap-1"
+                              onClick={async () => {
+                                const res = await importEmpreendedorToAdministra(emp);
+                                if (!res.success) toast.error(res.message || 'Erro ao puxar empreendedor.');
+                                else toast.success(`"${emp.nome}" puxado e salvo na base central do Administra!`);
+                              }}
+                              className="px-3 py-1.5 rounded-xl bg-sky-600 hover:bg-sky-700 text-white text-[11px] font-black uppercase tracking-wider flex items-center gap-1.5"
                             >
-                              <Edit3 size={13} /> Editar
+                              <Download size={13} /> {alreadyInAdministra ? 'Atualizar no Administra' : 'Puxar para Administra'}
                             </button>
+                          ) : editable ? (
+                            <>
+                              <button
+                                type="button"
+                                onClick={() => openEditEmpreendedor(emp)}
+                                className="px-3 py-1.5 rounded-xl border border-slate-200 hover:bg-slate-50 text-slate-700 text-[11px] font-bold flex items-center gap-1"
+                              >
+                                <Edit3 size={13} /> Editar
+                              </button>
+                              {canDelete && (
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    setConfirmDelete({
+                                      isOpen: true,
+                                      title: 'Excluir Empreendedor',
+                                      message: `Deseja excluir "${emp.nome}" da base local do Administra?`,
+                                      onConfirm: async () => {
+                                        const res = await deleteEmpreendedor(emp.id);
+                                        if (!res.success) toast.error(res.message);
+                                        else toast.success('Empreendedor excluído.');
+                                      },
+                                    })
+                                  }
+                                  className="px-3 py-1.5 rounded-xl border border-rose-200 hover:bg-rose-50 text-rose-600 text-[11px] font-bold flex items-center gap-1"
+                                >
+                                  <Trash2 size={13} /> Excluir
+                                </button>
+                              )}
+                            </>
+                          ) : (
                             <button
                               type="button"
                               onClick={() =>
-                                setConfirmDelete({
+                                setChangeRequestTarget({
                                   isOpen: true,
-                                  title: 'Excluir Empreendedor',
-                                  message: `Deseja excluir "${emp.nome}" da base local do Administra?`,
-                                  onConfirm: async () => {
-                                    const res = await deleteEmpreendedor(emp.id);
-                                    if (!res.success) toast.error(res.message);
-                                    else toast.success('Empreendedor excluído.');
-                                  },
+                                  targetType: 'EMPREENDEDOR',
+                                  record: emp,
                                 })
                               }
-                              className="px-3 py-1.5 rounded-xl border border-rose-200 hover:bg-rose-50 text-rose-600 text-[11px] font-bold flex items-center gap-1"
+                              className="px-3 py-1.5 rounded-xl bg-amber-600 hover:bg-amber-700 text-white text-[11px] font-black uppercase tracking-wider flex items-center gap-1.5"
                             >
-                              <Trash2 size={13} /> Excluir
+                              <GitPullRequest size={13} /> Solicitar Alteração
                             </button>
-                          </>
-                        ) : (
-                          <button
-                            type="button"
-                            onClick={() =>
-                              setChangeRequestTarget({
-                                isOpen: true,
-                                targetType: 'EMPREENDEDOR',
-                                record: emp,
-                              })
-                            }
-                            className="px-3 py-1.5 rounded-xl bg-amber-600 hover:bg-amber-700 text-white text-[11px] font-black uppercase tracking-wider flex items-center gap-1.5"
-                          >
-                            <GitPullRequest size={13} /> Solicitar Alteração
-                          </button>
-                        )}
-                      </div>
+                          )}
+                        </div>
+                      )}
                     </div>
                   </div>
                 );
@@ -1615,63 +1627,67 @@ export const EcossistemaAdministra: React.FC = () => {
                         </button>
                       </div>
 
-                      <div className="flex items-center gap-2">
-                        {isExternalPreview ? (
-                          <button
-                            type="button"
-                            onClick={async () => {
-                              const res = await importBarragemToAdministra(bar);
-                              if (!res.success) toast.error(res.message || 'Erro ao puxar barragem.');
-                              else toast.success(`Barragem "${bar.nomeBarragem}" puxada e salva no Administra!`);
-                            }}
-                            className="px-3 py-1.5 rounded-xl bg-sky-600 hover:bg-sky-700 text-white text-[11px] font-black uppercase tracking-wider flex items-center gap-1.5"
-                          >
-                            <Download size={13} /> {alreadyInAdministra ? 'Atualizar no Administra' : 'Puxar para Administra'}
-                          </button>
-                        ) : editable ? (
-                          <>
+                      {canEdit && (
+                        <div className="flex items-center gap-2">
+                          {isExternalPreview ? (
                             <button
                               type="button"
-                              onClick={() => openEditBarragem(bar)}
-                              className="px-3 py-1.5 rounded-xl border border-slate-200 hover:bg-slate-50 text-slate-700 text-[11px] font-bold flex items-center gap-1"
+                              onClick={async () => {
+                                const res = await importBarragemToAdministra(bar);
+                                if (!res.success) toast.error(res.message || 'Erro ao puxar barragem.');
+                                else toast.success(`Barragem "${bar.nomeBarragem}" puxada e salva no Administra!`);
+                              }}
+                              className="px-3 py-1.5 rounded-xl bg-sky-600 hover:bg-sky-700 text-white text-[11px] font-black uppercase tracking-wider flex items-center gap-1.5"
                             >
-                              <Edit3 size={13} /> Editar
+                              <Download size={13} /> {alreadyInAdministra ? 'Atualizar no Administra' : 'Puxar para Administra'}
                             </button>
+                          ) : editable ? (
+                            <>
+                              <button
+                                type="button"
+                                onClick={() => openEditBarragem(bar)}
+                                className="px-3 py-1.5 rounded-xl border border-slate-200 hover:bg-slate-50 text-slate-700 text-[11px] font-bold flex items-center gap-1"
+                              >
+                                <Edit3 size={13} /> Editar
+                              </button>
+                              {canDelete && (
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    setConfirmDelete({
+                                      isOpen: true,
+                                      title: 'Excluir Barragem',
+                                      message: `Deseja excluir "${bar.nomeBarragem}" da base local do Administra?`,
+                                      onConfirm: async () => {
+                                        const res = await deleteBarragem(bar.id);
+                                        if (!res.success) toast.error(res.message);
+                                        else toast.success('Barragem excluída.');
+                                      },
+                                    })
+                                  }
+                                  className="px-3 py-1.5 rounded-xl border border-rose-200 hover:bg-rose-50 text-rose-600 text-[11px] font-bold flex items-center gap-1"
+                                >
+                                  <Trash2 size={13} /> Excluir
+                                </button>
+                              )}
+                            </>
+                          ) : (
                             <button
                               type="button"
                               onClick={() =>
-                                setConfirmDelete({
+                                setChangeRequestTarget({
                                   isOpen: true,
-                                  title: 'Excluir Barragem',
-                                  message: `Deseja excluir "${bar.nomeBarragem}" da base local do Administra?`,
-                                  onConfirm: async () => {
-                                    const res = await deleteBarragem(bar.id);
-                                    if (!res.success) toast.error(res.message);
-                                    else toast.success('Barragem excluída.');
-                                  },
+                                  targetType: 'BARRAGEM',
+                                  record: bar,
                                 })
                               }
-                              className="px-3 py-1.5 rounded-xl border border-rose-200 hover:bg-rose-50 text-rose-600 text-[11px] font-bold flex items-center gap-1"
+                              className="px-3 py-1.5 rounded-xl bg-amber-600 hover:bg-amber-700 text-white text-[11px] font-black uppercase tracking-wider flex items-center gap-1.5"
                             >
-                              <Trash2 size={13} /> Excluir
+                              <GitPullRequest size={13} /> Solicitar Alteração
                             </button>
-                          </>
-                        ) : (
-                          <button
-                            type="button"
-                            onClick={() =>
-                              setChangeRequestTarget({
-                                isOpen: true,
-                                targetType: 'BARRAGEM',
-                                record: bar,
-                              })
-                            }
-                            className="px-3 py-1.5 rounded-xl bg-amber-600 hover:bg-amber-700 text-white text-[11px] font-black uppercase tracking-wider flex items-center gap-1.5"
-                          >
-                            <GitPullRequest size={13} /> Solicitar Alteração
-                          </button>
-                        )}
-                      </div>
+                          )}
+                        </div>
+                      )}
                     </div>
                   </div>
                 );
@@ -1756,63 +1772,67 @@ export const EcossistemaAdministra: React.FC = () => {
                       )}
                     </div>
 
-                    <div className="flex justify-end gap-2 pt-3 border-t border-slate-100">
-                      {isExternalPreview ? (
-                        <button
-                          type="button"
-                          onClick={async () => {
-                            const res = await importRTToAdministra(rt);
-                            if (!res.success) toast.error(res.message || 'Erro ao puxar RT.');
-                            else toast.success(`"${rt.nome}" puxado e salvo na base central do Administra!`);
-                          }}
-                          className="px-3 py-1.5 rounded-xl bg-sky-600 hover:bg-sky-700 text-white text-[11px] font-black uppercase tracking-wider flex items-center gap-1.5"
-                        >
-                          <Download size={13} /> {alreadyInAdministra ? 'Atualizar no Administra' : 'Puxar para Administra'}
-                        </button>
-                      ) : editable ? (
-                        <>
+                    {canEdit && (
+                      <div className="flex justify-end gap-2 pt-3 border-t border-slate-100">
+                        {isExternalPreview ? (
                           <button
                             type="button"
-                            onClick={() => openEditRT(rt)}
-                            className="px-3 py-1.5 rounded-xl border border-slate-200 hover:bg-slate-50 text-slate-700 text-[11px] font-bold flex items-center gap-1"
+                            onClick={async () => {
+                              const res = await importRTToAdministra(rt);
+                              if (!res.success) toast.error(res.message || 'Erro ao puxar RT.');
+                              else toast.success(`"${rt.nome}" puxado e salvo na base central do Administra!`);
+                            }}
+                            className="px-3 py-1.5 rounded-xl bg-sky-600 hover:bg-sky-700 text-white text-[11px] font-black uppercase tracking-wider flex items-center gap-1.5"
                           >
-                            <Edit3 size={13} /> Editar
+                            <Download size={13} /> {alreadyInAdministra ? 'Atualizar no Administra' : 'Puxar para Administra'}
                           </button>
+                        ) : editable ? (
+                          <>
+                            <button
+                              type="button"
+                              onClick={() => openEditRT(rt)}
+                              className="px-3 py-1.5 rounded-xl border border-slate-200 hover:bg-slate-50 text-slate-700 text-[11px] font-bold flex items-center gap-1"
+                            >
+                              <Edit3 size={13} /> Editar
+                            </button>
+                            {canDelete && (
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  setConfirmDelete({
+                                    isOpen: true,
+                                    title: 'Excluir Responsável Técnico',
+                                    message: `Deseja excluir "${rt.nome}" da base local do Administra?`,
+                                    onConfirm: async () => {
+                                      const res = await deleteResponsavelTecnico(rt.id);
+                                      if (!res.success) toast.error(res.message);
+                                      else toast.success('Responsável Técnico excluído.');
+                                    },
+                                  })
+                                }
+                                className="px-3 py-1.5 rounded-xl border border-rose-200 hover:bg-rose-50 text-rose-600 text-[11px] font-bold flex items-center gap-1"
+                              >
+                                <Trash2 size={13} /> Excluir
+                              </button>
+                            )}
+                          </>
+                        ) : (
                           <button
                             type="button"
                             onClick={() =>
-                              setConfirmDelete({
+                              setChangeRequestTarget({
                                 isOpen: true,
-                                title: 'Excluir Responsável Técnico',
-                                message: `Deseja excluir "${rt.nome}" da base local do Administra?`,
-                                onConfirm: async () => {
-                                  const res = await deleteResponsavelTecnico(rt.id);
-                                  if (!res.success) toast.error(res.message);
-                                  else toast.success('Responsável Técnico excluído.');
-                                },
+                                targetType: 'RESPONSAVEL_TECNICO',
+                                record: rt,
                               })
                             }
-                            className="px-3 py-1.5 rounded-xl border border-rose-200 hover:bg-rose-50 text-rose-600 text-[11px] font-bold flex items-center gap-1"
+                            className="px-3 py-1.5 rounded-xl bg-amber-600 hover:bg-amber-700 text-white text-[11px] font-black uppercase tracking-wider flex items-center gap-1.5"
                           >
-                            <Trash2 size={13} /> Excluir
+                            <GitPullRequest size={13} /> Solicitar Alteração
                           </button>
-                        </>
-                      ) : (
-                        <button
-                          type="button"
-                          onClick={() =>
-                            setChangeRequestTarget({
-                              isOpen: true,
-                              targetType: 'RESPONSAVEL_TECNICO',
-                              record: rt,
-                            })
-                          }
-                          className="px-3 py-1.5 rounded-xl bg-amber-600 hover:bg-amber-700 text-white text-[11px] font-black uppercase tracking-wider flex items-center gap-1.5"
-                        >
-                          <GitPullRequest size={13} /> Solicitar Alteração
-                        </button>
-                      )}
-                    </div>
+                        )}
+                      </div>
+                    )}
                   </div>
                 );
               })}
@@ -2008,7 +2028,7 @@ export const EcossistemaAdministra: React.FC = () => {
               <div className="space-y-4">
                 {filteredRequests.map((req) => {
                   const canReview =
-                    req.status === 'PENDENTE' && req.targetOwnerSystem === CURRENT_SYSTEM_ID;
+                    canEdit && req.status === 'PENDENTE' && req.targetOwnerSystem === CURRENT_SYSTEM_ID;
                   const proposedKeys = Object.keys(req.proposedChanges || {});
 
                   return (
@@ -2046,7 +2066,7 @@ export const EcossistemaAdministra: React.FC = () => {
                           </p>
                         </div>
 
-                        {req.status === 'PENDENTE' && !canReview && (
+                        {req.status === 'PENDENTE' && req.targetOwnerSystem !== CURRENT_SYSTEM_ID && (
                           <span className="px-3 py-1.5 rounded-xl bg-slate-100 text-slate-600 text-xs font-bold border border-slate-200">
                             Aguardando analista/adm de{' '}
                             {ECOSYSTEM_SYSTEM_LABELS[req.targetOwnerSystem].name}
@@ -2098,19 +2118,9 @@ export const EcossistemaAdministra: React.FC = () => {
                           {reviewingRequestId === req.id ? (
                             <div className="p-4 rounded-2xl bg-slate-50 border border-slate-200 space-y-3">
                               <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                                <input
-                                  type="text"
-                                  list="reviewers-datalist"
-                                  value={reviewerName}
-                                  onChange={(e) => setReviewerName(e.target.value)}
-                                  placeholder="Nome do analista/adm revisor *"
-                                  className="px-3 py-2 bg-white border border-slate-300 rounded-xl text-xs font-bold text-slate-800"
-                                />
-                                <datalist id="reviewers-datalist">
-                                  {OPS_ANALISTA.map((a) => (
-                                    <option key={a} value={a} />
-                                  ))}
-                                </datalist>
+                                <div className="px-3 py-2 bg-slate-100 border border-slate-200 rounded-xl text-xs font-bold text-slate-700 flex items-center">
+                                  Revisor autenticado: {sessionReviewerName}
+                                </div>
                                 <input
                                   type="text"
                                   value={reviewNotes}

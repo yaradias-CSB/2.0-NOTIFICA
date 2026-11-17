@@ -24,6 +24,7 @@ import { CarCoordinateLookup } from './ecosystem/CarCoordinateLookup';
 import ConfirmModal from './ui/ConfirmModal';
 import { matchMunicipioMT } from '../services/carLookupService';
 import { sanitizeObject } from '../lib/security';
+import { getActiveAuthUser } from '../lib/supabase';
 
 const INITIAL_STATE: OficioData = {
   protocolo: '',
@@ -342,7 +343,12 @@ const OficioForm: React.FC<OficioFormProps> = ({ onBack, initialData, readOnly }
       processo: sanitized.processo || sanitized.protocolo,
       coordenadasGMS: sanitized.coordenadasGMS,
       responsaveisTecnicos: rtList,
-      analista: sanitized.analistas?.[0] || sanitized.analistasOutros?.[0] || 'Sistema Local',
+      analista:
+        sanitized.analistas?.[0] ||
+        sanitized.analistasOutros?.[0] ||
+        getActiveAuthUser()?.name ||
+        getActiveAuthUser()?.email ||
+        '',
     });
   };
 
@@ -457,7 +463,9 @@ const OficioForm: React.FC<OficioFormProps> = ({ onBack, initialData, readOnly }
             matched?.createdByAnalyst ||
             sanitized.analistas?.[0] ||
             sanitized.analistasOutros?.[0] ||
-            'Sistema Local',
+            getActiveAuthUser()?.name ||
+            getActiveAuthUser()?.email ||
+            '',
         },
         matched ? { allowEditFromForm: true } : undefined
       );
@@ -513,7 +521,9 @@ const OficioForm: React.FC<OficioFormProps> = ({ onBack, initialData, readOnly }
             matched?.createdByAnalyst ||
             sanitized.analistas?.[0] ||
             sanitized.analistasOutros?.[0] ||
-            'Sistema Local',
+            getActiveAuthUser()?.name ||
+            getActiveAuthUser()?.email ||
+            '',
         },
         matched ? { allowEditFromForm: true } : undefined
       );
@@ -585,7 +595,11 @@ const OficioForm: React.FC<OficioFormProps> = ({ onBack, initialData, readOnly }
             cpf: cpfValue,
             sourceSystem: CURRENT_SYSTEM_ID,
             createdByAnalyst:
-              sanitized.analistas?.[0] || sanitized.analistasOutros?.[0] || 'Sistema Local',
+              sanitized.analistas?.[0] ||
+              sanitized.analistasOutros?.[0] ||
+              getActiveAuthUser()?.name ||
+              getActiveAuthUser()?.email ||
+              '',
           });
           if (!rtRes.success || !rtRes.data) {
             throw new Error(rtRes.message || `Erro ao cadastrar RT ${nome}.`);
@@ -661,7 +675,12 @@ const OficioForm: React.FC<OficioFormProps> = ({ onBack, initialData, readOnly }
         responsavelTecnicoIds: resolvedRtIds,
         sourceSystem: sanitizedFormData.sourceSystem || CURRENT_SYSTEM_ID,
         status: status,
-        analista: formData.analistas?.[0] || formData.analistasOutros?.[0] || 'Sistema Local',
+        analista:
+          formData.analistas?.[0] ||
+          formData.analistasOutros?.[0] ||
+          getActiveAuthUser()?.name ||
+          getActiveAuthUser()?.email ||
+          '',
         tipo_documento: formData.tipo_documento
       });
 

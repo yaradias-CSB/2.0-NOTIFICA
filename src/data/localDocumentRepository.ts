@@ -8,6 +8,7 @@ import {
 import { OPS_ANALISTA, OPS_MUNICIPIOS, OPS_RESPONSAVEL_TECNICO } from '../constants';
 import { DocumentRepository } from './types';
 import { assertSafeId, safeJsonParse, sanitizeObject, stripSensitiveFields } from '../lib/security';
+import { authFetch, getActiveAuthUser } from '../lib/supabase';
 import {
   buildNotificacaoSigaDocText,
   buildNotificacaoText,
@@ -17,6 +18,11 @@ import {
   parseBarragensSummary,
   stringsToCoordenadasGms,
 } from '../services/documentTemplates';
+
+function getSessionAnalystFallback(): string {
+  const active = getActiveAuthUser();
+  return active?.name || active?.email || 'Analista';
+}
 
 const STORAGE_KEYS = {
   PARECERES: 'notifica_csb_pareceres',
@@ -149,7 +155,7 @@ export function serializeParecerFlat(data: ParecerData, id: string, now: string,
     data_protocolo: clean.dataProtocolo || '',
     data_inspecao: clean.dataInspecao || '',
     status: clean.status || 'Rascunho',
-    analista: clean.analista || analistasAll[0] || analistasOutros[0] || 'Sistema Local',
+    analista: clean.analista || analistasAll[0] || analistasOutros[0] || getSessionAnalystFallback(),
     analistas_nomes: analistasAll.join(' | '),
     analistas_outros: analistasOutros.join(' | '),
     empreendedor_id: clean.empreendedorId || '',
@@ -350,7 +356,7 @@ export function serializeOficioFlat(data: OficioData, id: string, now: string, c
     situacao_cumprimento: clean.situacaoCumprimento || 'Pendente / Em aberto',
     prazo_cumprimento: Number(clean.prazoCumprimento) || 90,
     prorrogacao_prazo: Number(clean.prorrogacaoPrazo) || 0,
-    analista: analistas[0] || analistasOutros[0] || 'Sistema Local',
+    analista: analistas[0] || analistasOutros[0] || getSessionAnalystFallback(),
     analistas_nomes: analistas.join(' | '),
     analistas_outros: analistasOutros.join(' | '),
     empreendedor_id: clean.empreendedorId || '',
@@ -487,7 +493,7 @@ export function serializeNotificacaoFlat(
     prazo_vencimento: String(clean.prazoVencimento || '90'),
     situacao: clean.situacao || 'Em aberto',
     status: clean.status || 'Rascunho',
-    analista: clean.analista || analistas[0] || 'Sistema Local',
+    analista: clean.analista || analistas[0] || getSessionAnalystFallback(),
     analistas_nomes: analistas.join(' | '),
     empreendedor_id: clean.empreendedorId || '',
     empreendedor_nome: clean.empreendedorNome || '',
@@ -649,6 +655,17 @@ function writeCollection<T>(primaryKey: string, items: T[]): void {
   }
 }
 
+async function parseDocErrorMessage(res: Response, fallback: string): Promise<string> {
+  try {
+    const payload = await res.json();
+    if (payload?.error) return String(payload.error);
+    if (payload?.message) return String(payload.message);
+  } catch {
+    // Ignore non-JSON error body
+  }
+  return fallback;
+}
+
 async function fetchRemoteCollection<T extends { id?: string }>(
   kind: 'pareceres' | 'oficios' | 'notificacoes'
 ): Promise<T[]> {
@@ -656,7 +673,7 @@ async function fetchRemoteCollection<T extends { id?: string }>(
     return [];
   }
   try {
-    const res = await fetch(`/api/documents/${kind}`);
+    const res = await authFetch(`/api/documents/${kind}`);
     if (!res.ok) return [];
     const data = await res.json();
     return Array.isArray(data?.items) ? (data.items as T[]) : [];
@@ -672,14 +689,13 @@ async function syncRemoteDocument(
   if (typeof window === 'undefined' || (typeof navigator !== 'undefined' && !navigator.onLine)) {
     return;
   }
-  try {
-    await fetch(`/api/documents/${kind}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(stripSensitiveFields(flatDoc)),
-    });
-  } catch {
-    // Offline or local-only cache fallback
+  const res = await authFetch(`/api/documents/${kind}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(stripSensitiveFields(flatDoc)),
+  });
+  if (!res.ok) {
+    throw new Error(await parseDocErrorMessage(res, `Falha ao sincronizar documento remoto (HTTP ${res.status}).`));
   }
 }
 
@@ -690,12 +706,11 @@ async function deleteRemoteDocument(
   if (typeof window === 'undefined' || (typeof navigator !== 'undefined' && !navigator.onLine)) {
     return;
   }
-  try {
-    await fetch(`/api/documents/${kind}/${encodeURIComponent(id)}`, {
-      method: 'DELETE',
-    });
-  } catch {
-    // Ignore offline error
+  const res = await authFetch(`/api/documents/${kind}/${encodeURIComponent(id)}`, {
+    method: 'DELETE',
+  });
+  if (!res.ok) {
+    throw new Error(await parseDocErrorMessage(res, `Falha ao excluir documento remoto (HTTP ${res.status}).`));
   }
 }
 
@@ -744,24 +759,24 @@ export class LocalDocumentRepository implements DocumentRepository {
     const existing = current.find((item) => item.id === id);
     const createdAt = existing?.created_at || cleanData.created_at || now;
 
-    // Persist lean flat row both locally & remotely
+    // Persist lean flat row remotely first, then locally
     const flatRow = serializeParecerFlat(cleanData, id, now, createdAt);
+    await syncRemoteDocument('pareceres', flatRow);
     const updated = [flatRow, ...current.filter((item) => item.id !== id)];
     writeCollection(STORAGE_KEYS.PARECERES, updated);
-    await syncRemoteDocument('pareceres', flatRow);
 
     return hydrateParecerRow(flatRow);
   }
 
   async deleteParecer(id: string): Promise<void> {
     const safeId = assertSafeId(id, 'ID do parecer');
+    await deleteRemoteDocument('pareceres', safeId);
     const current = readCollection<Record<string, any>>(
       STORAGE_KEYS.PARECERES,
       STORAGE_KEYS.LEGACY_PARECERES
     );
     const updated = current.filter((item) => item.id !== safeId);
     writeCollection(STORAGE_KEYS.PARECERES, updated);
-    await deleteRemoteDocument('pareceres', safeId);
   }
 
   async getOficios(): Promise<OficioData[]> {
@@ -790,22 +805,22 @@ export class LocalDocumentRepository implements DocumentRepository {
     const createdAt = existing?.created_at || cleanData.created_at || now;
 
     const flatRow = serializeOficioFlat(cleanData, id, now, createdAt);
+    await syncRemoteDocument('oficios', flatRow);
     const updated = [flatRow, ...current.filter((item) => item.id !== id)];
     writeCollection(STORAGE_KEYS.OFICIOS, updated);
-    await syncRemoteDocument('oficios', flatRow);
 
     return hydrateOficioRow(flatRow);
   }
 
   async deleteOficio(id: string): Promise<void> {
     const safeId = assertSafeId(id, 'ID do ofício');
+    await deleteRemoteDocument('oficios', safeId);
     const current = readCollection<Record<string, any>>(
       STORAGE_KEYS.OFICIOS,
       STORAGE_KEYS.LEGACY_OFICIOS
     );
     const updated = current.filter((item) => item.id !== safeId);
     writeCollection(STORAGE_KEYS.OFICIOS, updated);
-    await deleteRemoteDocument('oficios', safeId);
   }
 
   async getNotificacoes(): Promise<NotificacaoData[]> {
@@ -834,22 +849,22 @@ export class LocalDocumentRepository implements DocumentRepository {
     const createdAt = existing?.created_at || cleanData.created_at || now;
 
     const flatRow = serializeNotificacaoFlat(cleanData, id, now, createdAt);
+    await syncRemoteDocument('notificacoes', flatRow);
     const updated = [flatRow, ...current.filter((item) => item.id !== id)];
     writeCollection(STORAGE_KEYS.NOTIFICACOES, updated);
-    await syncRemoteDocument('notificacoes', flatRow);
 
     return hydrateNotificacaoRow(flatRow);
   }
 
   async deleteNotificacao(id: string): Promise<void> {
     const safeId = assertSafeId(id, 'ID da notificação');
+    await deleteRemoteDocument('notificacoes', safeId);
     const current = readCollection<Record<string, any>>(
       STORAGE_KEYS.NOTIFICACOES,
       STORAGE_KEYS.LEGACY_NOTIFICACOES
     );
     const updated = current.filter((item) => item.id !== safeId);
     writeCollection(STORAGE_KEYS.NOTIFICACOES, updated);
-    await deleteRemoteDocument('notificacoes', safeId);
   }
 
   async getFiscalizacoes(): Promise<FiscalizacaoData[]> {

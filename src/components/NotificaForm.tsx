@@ -32,6 +32,7 @@ import { CarCoordinateLookup } from './ecosystem/CarCoordinateLookup';
 import { matchMunicipioMT } from '../services/carLookupService';
 
 import { sanitizeObject } from '../lib/security';
+import { getActiveAuthUser } from '../lib/supabase';
 import RelatorioTecnicoSection from './RelatorioTecnicoSection';
 
 interface NotificaFormProps {
@@ -494,7 +495,7 @@ const NotificaForm: React.FC<NotificaFormProps> = ({ onBack, initialData, readOn
         activeBarragens[0]?.long || sanitized.long
       ),
       barragens: barragensPayload,
-      analista: sanitized.analistas?.[0] || 'Sistema Local',
+      analista: sanitized.analistas?.[0] || getActiveAuthUser()?.name || getActiveAuthUser()?.email || '',
     });
 
     const updatedBarragens = activeBarragens.map((b, idx) => ({
@@ -630,7 +631,9 @@ const NotificaForm: React.FC<NotificaFormProps> = ({ onBack, initialData, readOn
             matched?.createdByAnalyst ||
             sanitized.analistas?.[0] ||
             sanitized.analista ||
-            'Sistema Local',
+            getActiveAuthUser()?.name ||
+            getActiveAuthUser()?.email ||
+            '',
         },
         matched ? { allowEditFromForm: true } : undefined
       );
@@ -744,7 +747,9 @@ const NotificaForm: React.FC<NotificaFormProps> = ({ onBack, initialData, readOn
               matched?.createdByAnalyst ||
               sanitized.analistas?.[0] ||
               sanitized.analista ||
-              'Sistema Local',
+              getActiveAuthUser()?.name ||
+              getActiveAuthUser()?.email ||
+              '',
           },
           matched ? { allowEditFromForm: true } : undefined
         );
@@ -854,7 +859,7 @@ const NotificaForm: React.FC<NotificaFormProps> = ({ onBack, initialData, readOn
         barragemIds: resolvedBarragemIds,
         textoNotificacaoCustomizado: isTextoEdited,
         sourceSystem: sanitizedFormData.sourceSystem || CURRENT_SYSTEM_ID,
-        analista: formData.analistas?.[0] || 'Sistema Local',
+        analista: formData.analistas?.[0] || getActiveAuthUser()?.name || getActiveAuthUser()?.email || '',
         numProcesso: formData.numProcesso || 'S/N',
         empreendedorNome: formData.empreendedorNome || 'Rascunho sem nome',
         documentoIdentificacao: formData.documentoIdentificacao || '',

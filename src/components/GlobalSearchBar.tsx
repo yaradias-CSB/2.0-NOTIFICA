@@ -19,6 +19,7 @@ import {
   AlertCircle
 } from 'lucide-react';
 import { DataContext, AppDocument } from '../contexts/DataContext';
+import { useAuth } from '../contexts/AuthContext';
 import { ParecerData, OficioData, NotificacaoData } from '../types';
 
 interface GlobalSearchBarProps {
@@ -57,6 +58,7 @@ export const GlobalSearchBar: React.FC<GlobalSearchBarProps> = ({
   onNavigateView 
 }) => {
   const { pareceres, oficios, notificacoes } = useContext(DataContext);
+  const { canEdit } = useAuth();
   const [query, setQuery] = useState('');
   const [isOpen, setIsOpen] = useState(false);
   const [activeTab, setActiveTab] = useState<'todos' | 'parecer' | 'oficio' | 'notificacao'>('todos');
@@ -233,7 +235,7 @@ export const GlobalSearchBar: React.FC<GlobalSearchBarProps> = ({
     } else if (e.key === 'Enter') {
       e.preventDefault();
       if (filteredResults[selectedIndex]) {
-        handleSelect(filteredResults[selectedIndex], false);
+        handleSelect(filteredResults[selectedIndex], !canEdit);
       }
     }
   };
@@ -247,7 +249,7 @@ export const GlobalSearchBar: React.FC<GlobalSearchBarProps> = ({
   };
 
   const handleSelect = (item: SearchItem, viewOnly: boolean = false) => {
-    onSelectDocument(item.rawDoc, viewOnly);
+    onSelectDocument(item.rawDoc, viewOnly || !canEdit);
     setIsOpen(false);
   };
 
@@ -484,7 +486,7 @@ export const GlobalSearchBar: React.FC<GlobalSearchBarProps> = ({
                   return (
                     <div
                       key={item.id}
-                      onClick={() => handleSelect(item, false)}
+                      onClick={() => handleSelect(item, !canEdit)}
                       className={`
                         search-result-row px-4 py-3 cursor-pointer transition-colors flex flex-col sm:flex-row sm:items-center justify-between gap-3 group
                         ${isSelected ? 'bg-emerald-50/70 border-l-4 border-emerald-500 pl-3' : 'hover:bg-slate-50/80'}
@@ -572,18 +574,20 @@ export const GlobalSearchBar: React.FC<GlobalSearchBarProps> = ({
                           <span className="hidden sm:inline">Visualizar</span>
                         </button>
 
-                        <button
-                          type="button"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            handleSelect(item, false);
-                          }}
-                          className="px-2.5 py-1.5 text-xs font-bold text-white bg-emerald-600 hover:bg-emerald-700 rounded-lg transition-colors flex items-center gap-1 shadow-2xs"
-                          title="Editar / Abrir documento"
-                        >
-                          <Edit3 size={13} />
-                          <span>Abrir</span>
-                        </button>
+                        {canEdit && (
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleSelect(item, false);
+                            }}
+                            className="px-2.5 py-1.5 text-xs font-bold text-white bg-emerald-600 hover:bg-emerald-700 rounded-lg transition-colors flex items-center gap-1 shadow-2xs"
+                            title="Editar / Abrir documento"
+                          >
+                            <Edit3 size={13} />
+                            <span>Abrir</span>
+                          </button>
+                        )}
                       </div>
                     </div>
                   );

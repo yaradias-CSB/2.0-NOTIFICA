@@ -2,6 +2,7 @@ import React, { useContext, useEffect, useMemo, useState } from 'react';
 import { X, Send, ShieldAlert, ArrowRight, Loader2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { EcosystemContext } from '../../contexts/EcosystemContext';
+import { useAuth } from '../../contexts/AuthContext';
 import {
   BarragemCanonica,
   ChangeRequestTargetType,
@@ -9,7 +10,7 @@ import {
   EmpreendedorCanonico,
   ResponsavelTecnicoCanonico,
 } from '../../types/ecosystem';
-import { OPS_ANALISTA, OPS_MUNICIPIOS } from '../../constants';
+import { OPS_MUNICIPIOS } from '../../constants';
 
 interface ChangeRequestModalProps {
   isOpen: boolean;
@@ -73,8 +74,9 @@ export const ChangeRequestModal: React.FC<ChangeRequestModalProps> = ({
   record,
 }) => {
   const { submitChangeRequest } = useContext(EcosystemContext);
+  const { profile, user } = useAuth();
+  const sessionAnalystName = profile?.nome || user?.email || '';
   const [formValues, setFormValues] = useState<Record<string, string>>({});
-  const [requestedByName, setRequestedByName] = useState('');
   const [justification, setJustification] = useState('');
   const [submitting, setSubmitting] = useState(false);
 
@@ -118,8 +120,8 @@ export const ChangeRequestModal: React.FC<ChangeRequestModalProps> = ({
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!requestedByName.trim()) {
-      toast.error('Informe o nome do analista solicitante.');
+    if (!sessionAnalystName.trim()) {
+      toast.error('Sessão de analista autenticada é obrigatória.');
       return;
     }
     if (justification.trim().length < 5) {
@@ -147,7 +149,7 @@ export const ChangeRequestModal: React.FC<ChangeRequestModalProps> = ({
         targetId: record.id,
         targetLabel,
         targetOwnerSystem: record.sourceSystem,
-        requestedByName: requestedByName.trim(),
+        requestedByName: sessionAnalystName.trim(),
         justification: justification.trim(),
         currentSnapshot,
         proposedChanges,
@@ -207,22 +209,14 @@ export const ChangeRequestModal: React.FC<ChangeRequestModalProps> = ({
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div className="space-y-1.5">
               <label className="text-[10px] font-black uppercase tracking-widest text-slate-600">
-                Analista Solicitante (Notifica CSB) *
+                Analista Solicitante (Sessão Autenticada)
               </label>
               <input
                 type="text"
-                list="ecosystem-analysts-list"
-                value={requestedByName}
-                onChange={(e) => setRequestedByName(e.target.value)}
-                placeholder="Selecione ou digite seu nome"
-                className="w-full px-3.5 py-2.5 bg-white border-2 border-slate-200 rounded-xl text-sm font-bold text-slate-800 focus:border-emerald-600 outline-none"
-                required
+                value={sessionAnalystName}
+                readOnly
+                className="w-full px-3.5 py-2.5 bg-slate-100 border-2 border-slate-200 rounded-xl text-sm font-bold text-slate-700 outline-none cursor-not-allowed"
               />
-              <datalist id="ecosystem-analysts-list">
-                {OPS_ANALISTA.map((name) => (
-                  <option key={name} value={name} />
-                ))}
-              </datalist>
             </div>
 
             <div className="space-y-1.5">

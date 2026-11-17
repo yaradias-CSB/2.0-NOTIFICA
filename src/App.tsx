@@ -39,7 +39,8 @@ import {
   Search,
   RefreshCw,
   ChevronDown,
-  Globe
+  Globe,
+  LogOut
 } from 'lucide-react';
 
 import Dashboard from './components/Dashboard';
@@ -53,6 +54,7 @@ import GlobalSearchBar from './components/GlobalSearchBar';
 import { DataContext } from './contexts/DataContext';
 import { EcosystemContext } from './contexts/EcosystemContext';
 import { useNotifications } from './contexts/NotificationContext';
+import { useAuth } from './contexts/AuthContext';
 import { UserManagement } from './components/UserManagement';
 import { AuditLogs } from './components/AuditLogs';
 import { ParecerData, OficioData } from './types';
@@ -82,6 +84,7 @@ const App: React.FC = () => {
   };
   const [activeInfo, setActiveInfo] = useState<string | null>(null);
   
+  const { user, profile, role, isAdmin, canEdit, signOut } = useAuth();
   const data = useContext(DataContext);
   const { pendingIncomingCount } = useContext(EcosystemContext);
   const notifications = useNotifications ? useNotifications() : { pendingCount: 0, importantUpdate: false };
@@ -125,22 +128,35 @@ const App: React.FC = () => {
   const isSidebarCollapsed = (currentView === 'form' || currentView === 'oficio' || currentView === 'notificacao') || isSidebarManualCollapsed;
   
   const handleNavigate = (view: 'dashboard' | 'list' | 'form' | 'oficio' | 'info' | 'users' | 'notificacao' | 'controle_notificacoes' | 'audit' | 'ecossistema', doc: AppDocument | null = null, viewOnly: boolean = false) => {
+    if (view === 'users' && !isAdmin) {
+      setCurrentView('dashboard');
+      setIsMobileMenuOpen(false);
+      setIsQuickCreateOpen(false);
+      return;
+    }
+    if (!canEdit && (view === 'form' || view === 'oficio' || view === 'notificacao') && !doc) {
+      setCurrentView('dashboard');
+      setIsMobileMenuOpen(false);
+      setIsQuickCreateOpen(false);
+      return;
+    }
     setEditingDocument(doc);
-    setIsViewOnly(viewOnly);
+    setIsViewOnly(viewOnly || !canEdit);
     setCurrentView(view);
     setIsMobileMenuOpen(false);
     setIsQuickCreateOpen(false);
   };
 
   const handleOpenDocumentFromSearch = (doc: AppDocument, viewOnly: boolean = false) => {
+    const effectiveViewOnly = viewOnly || !canEdit;
     const tipo = (doc as any).tipo_documento;
     if (tipo === 'Notificação') {
       setReturnView(currentView === 'controle_notificacoes' ? 'controle_notificacoes' : 'list');
-      handleNavigate('notificacao', doc, viewOnly);
+      handleNavigate('notificacao', doc, effectiveViewOnly);
     } else if (tipo?.includes('Ofício') || tipo?.includes('Oficio')) {
-      handleNavigate('oficio', doc as any, viewOnly);
+      handleNavigate('oficio', doc as any, effectiveViewOnly);
     } else {
-      handleNavigate('form', doc as any, viewOnly);
+      handleNavigate('form', doc as any, effectiveViewOnly);
     }
   };
 
@@ -169,15 +185,17 @@ const App: React.FC = () => {
             </div>
          </div>
          <div className="flex items-center gap-1.5 shrink-0">
-           <button 
-             type="button"
-             onClick={() => handleNavigate('form')}
-             className="px-2.5 min-h-[38px] bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-[11px] font-black flex items-center gap-1 transition-all active:scale-95"
-             aria-label="Novo Parecer"
-           >
-             <Plus size={14} />
-             <span>Novo</span>
-           </button>
+           {canEdit && (
+             <button 
+               type="button"
+               onClick={() => handleNavigate('form')}
+               className="px-2.5 min-h-[38px] bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-[11px] font-black flex items-center gap-1 transition-all active:scale-95"
+               aria-label="Novo Parecer"
+             >
+               <Plus size={14} />
+               <span>Novo</span>
+             </button>
+           )}
            <button 
              type="button"
              onClick={() => {
@@ -279,29 +297,33 @@ const App: React.FC = () => {
                 <span className="font-bold text-sm whitespace-nowrap tracking-tight">Banco de Dados</span>
               </button>
               
-              <button 
-                onClick={() => handleNavigate('form')}
-                className="flex items-center gap-3 w-full px-4 py-2 rounded-xl transition-all duration-200 group text-slate-400 hover:bg-slate-800/50 hover:text-white"
-              >
-                <ClipboardCheck size={20} className="shrink-0 text-slate-500 group-hover:text-emerald-400 transition-transform group-hover:scale-110" />
-                <span className="font-bold text-sm whitespace-nowrap tracking-tight">Novo Parecer</span>
-              </button>
+              {canEdit && (
+                <>
+                  <button 
+                    onClick={() => handleNavigate('form')}
+                    className="flex items-center gap-3 w-full px-4 py-2 rounded-xl transition-all duration-200 group text-slate-400 hover:bg-slate-800/50 hover:text-white"
+                  >
+                    <ClipboardCheck size={20} className="shrink-0 text-slate-500 group-hover:text-emerald-400 transition-transform group-hover:scale-110" />
+                    <span className="font-bold text-sm whitespace-nowrap tracking-tight">Novo Parecer</span>
+                  </button>
 
-              <button 
-                onClick={() => handleNavigate('oficio')}
-                className={`flex items-center gap-3 w-full px-4 py-2 rounded-xl transition-all duration-200 group ${currentView === 'oficio' ? 'bg-emerald-500 text-white shadow-lg shadow-emerald-500/20' : 'text-slate-400 hover:bg-slate-800/50 hover:text-white'}`}
-              >
-                <FileWarning size={20} className={`shrink-0 transition-transform group-hover:scale-110 ${currentView === 'oficio' ? 'text-white' : 'text-slate-500 group-hover:text-emerald-400'}`} />
-                <span className="font-bold text-sm whitespace-nowrap tracking-tight">Ofício de Pendência</span>
-              </button>
+                  <button 
+                    onClick={() => handleNavigate('oficio')}
+                    className={`flex items-center gap-3 w-full px-4 py-2 rounded-xl transition-all duration-200 group ${currentView === 'oficio' ? 'bg-emerald-500 text-white shadow-lg shadow-emerald-500/20' : 'text-slate-400 hover:bg-slate-800/50 hover:text-white'}`}
+                  >
+                    <FileWarning size={20} className={`shrink-0 transition-transform group-hover:scale-110 ${currentView === 'oficio' ? 'text-white' : 'text-slate-500 group-hover:text-emerald-400'}`} />
+                    <span className="font-bold text-sm whitespace-nowrap tracking-tight">Ofício de Pendência</span>
+                  </button>
 
-              <button 
-                onClick={() => handleNavigate('notificacao')}
-                className={`flex items-center gap-3 w-full px-4 py-2 rounded-xl transition-all duration-200 group ${currentView === 'notificacao' ? 'bg-emerald-500 text-white shadow-lg shadow-emerald-500/20' : 'text-slate-400 hover:bg-slate-800/50 hover:text-white'}`}
-              >
-                <Bell size={20} className={`shrink-0 transition-transform group-hover:scale-110 ${currentView === 'notificacao' ? 'text-white' : 'text-slate-500 group-hover:text-emerald-400'}`} />
-                <span className="font-bold text-sm whitespace-nowrap tracking-tight">Notificação</span>
-              </button>
+                  <button 
+                    onClick={() => handleNavigate('notificacao')}
+                    className={`flex items-center gap-3 w-full px-4 py-2 rounded-xl transition-all duration-200 group ${currentView === 'notificacao' ? 'bg-emerald-500 text-white shadow-lg shadow-emerald-500/20' : 'text-slate-400 hover:bg-slate-800/50 hover:text-white'}`}
+                  >
+                    <Bell size={20} className={`shrink-0 transition-transform group-hover:scale-110 ${currentView === 'notificacao' ? 'text-white' : 'text-slate-500 group-hover:text-emerald-400'}`} />
+                    <span className="font-bold text-sm whitespace-nowrap tracking-tight">Notificação</span>
+                  </button>
+                </>
+              )}
 
               <button 
                 onClick={() => handleNavigate('controle_notificacoes')}
@@ -338,13 +360,15 @@ const App: React.FC = () => {
                 <span className="font-bold text-sm whitespace-nowrap tracking-tight">Informações</span>
               </button>
 
-              <button 
-                onClick={() => handleNavigate('users')}
-                className={`flex items-center gap-3 w-full px-4 py-2 rounded-xl transition-all duration-200 group ${currentView === 'users' ? 'bg-emerald-500 text-white shadow-lg shadow-emerald-500/20' : 'text-slate-400 hover:bg-slate-800/50 hover:text-white'}`}
-              >
-                <Users size={20} className={`shrink-0 transition-transform group-hover:scale-110 ${currentView === 'users' ? 'text-white' : 'text-slate-500 group-hover:text-emerald-400'}`} />
-                <span className="font-bold text-sm whitespace-nowrap tracking-tight">Usuários</span>
-              </button>
+              {isAdmin && (
+                <button 
+                  onClick={() => handleNavigate('users')}
+                  className={`flex items-center gap-3 w-full px-4 py-2 rounded-xl transition-all duration-200 group ${currentView === 'users' ? 'bg-emerald-500 text-white shadow-lg shadow-emerald-500/20' : 'text-slate-400 hover:bg-slate-800/50 hover:text-white'}`}
+                >
+                  <Users size={20} className={`shrink-0 transition-transform group-hover:scale-110 ${currentView === 'users' ? 'text-white' : 'text-slate-500 group-hover:text-emerald-400'}`} />
+                  <span className="font-bold text-sm whitespace-nowrap tracking-tight">Usuários</span>
+                </button>
+              )}
 
               <button 
                 onClick={() => handleNavigate('audit')}
@@ -354,6 +378,26 @@ const App: React.FC = () => {
                 <span className="font-bold text-sm whitespace-nowrap tracking-tight">Auditoria</span>
               </button>
             </nav>
+
+            <div className="p-4 border-t border-slate-800/80 bg-slate-950/40 space-y-2.5">
+              <div className="flex items-center gap-2.5 min-w-0">
+                <div className="w-8 h-8 rounded-lg bg-emerald-500/20 text-emerald-400 flex items-center justify-center shrink-0">
+                  <UserIcon size={16} />
+                </div>
+                <div className="min-w-0 flex-1">
+                  <p className="text-xs font-bold text-white truncate">{profile?.nome || user?.email}</p>
+                  <p className="text-[10px] font-bold uppercase tracking-wider text-emerald-400 truncate">{role}</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => void signOut()}
+                className="flex items-center justify-center gap-2 w-full px-3 py-2 rounded-xl bg-slate-800 hover:bg-rose-600/90 text-slate-300 hover:text-white text-xs font-bold transition-colors cursor-pointer"
+              >
+                <LogOut size={14} />
+                <span>Sair</span>
+              </button>
+            </div>
           </>
         ) : (
           /* Collapsed State for Form (Desktop Only) */
@@ -377,27 +421,31 @@ const App: React.FC = () => {
               >
                 <Database size={24} />
               </button>
-              <button 
-                onClick={() => handleNavigate('form')}
-                className={`p-3 rounded-xl transition-all ${currentView === 'form' ? 'bg-emerald-500 text-white shadow-lg shadow-emerald-500/20' : 'text-slate-500 hover:bg-slate-800 hover:text-white'}`}
-                title="Novo Parecer"
-              >
-                <ClipboardCheck size={24} />
-              </button>
-              <button 
-                onClick={() => handleNavigate('oficio')}
-                className={`p-3 rounded-xl transition-all ${currentView === 'oficio' ? 'bg-emerald-500 text-white shadow-lg shadow-emerald-500/20' : 'text-slate-500 hover:bg-slate-800 hover:text-white'}`}
-                title="Ofício de Pendência"
-              >
-                <FileWarning size={24} />
-              </button>
-              <button 
-                onClick={() => handleNavigate('notificacao')}
-                className={`p-3 rounded-xl transition-all ${currentView === 'notificacao' ? 'bg-emerald-500 text-white shadow-lg shadow-emerald-500/20' : 'text-slate-500 hover:bg-slate-800 hover:text-white'}`}
-                title="Notificação"
-              >
-                <Bell size={24} />
-              </button>
+              {canEdit && (
+                <>
+                  <button 
+                    onClick={() => handleNavigate('form')}
+                    className={`p-3 rounded-xl transition-all ${currentView === 'form' ? 'bg-emerald-500 text-white shadow-lg shadow-emerald-500/20' : 'text-slate-500 hover:bg-slate-800 hover:text-white'}`}
+                    title="Novo Parecer"
+                  >
+                    <ClipboardCheck size={24} />
+                  </button>
+                  <button 
+                    onClick={() => handleNavigate('oficio')}
+                    className={`p-3 rounded-xl transition-all ${currentView === 'oficio' ? 'bg-emerald-500 text-white shadow-lg shadow-emerald-500/20' : 'text-slate-500 hover:bg-slate-800 hover:text-white'}`}
+                    title="Ofício de Pendência"
+                  >
+                    <FileWarning size={24} />
+                  </button>
+                  <button 
+                    onClick={() => handleNavigate('notificacao')}
+                    className={`p-3 rounded-xl transition-all ${currentView === 'notificacao' ? 'bg-emerald-500 text-white shadow-lg shadow-emerald-500/20' : 'text-slate-500 hover:bg-slate-800 hover:text-white'}`}
+                    title="Notificação"
+                  >
+                    <Bell size={24} />
+                  </button>
+                </>
+              )}
               <button 
                 onClick={() => handleNavigate('controle_notificacoes')}
                 className={`p-3 rounded-xl transition-all ${currentView === 'controle_notificacoes' ? 'bg-emerald-500 text-white shadow-lg shadow-emerald-500/20' : 'text-slate-500 hover:bg-slate-800 hover:text-white'}`}
@@ -416,13 +464,15 @@ const App: React.FC = () => {
                 )}
               </button>
 
-              <button 
-                onClick={() => handleNavigate('users')}
-                className={`p-3 rounded-xl transition-all ${currentView === 'users' ? 'bg-emerald-500 text-white shadow-lg shadow-emerald-500/20' : 'text-slate-500 hover:bg-slate-800 hover:text-white'}`}
-                title="Usuários"
-              >
-                <Users size={24} />
-              </button>
+              {isAdmin && (
+                <button 
+                  onClick={() => handleNavigate('users')}
+                  className={`p-3 rounded-xl transition-all ${currentView === 'users' ? 'bg-emerald-500 text-white shadow-lg shadow-emerald-500/20' : 'text-slate-500 hover:bg-slate-800 hover:text-white'}`}
+                  title="Usuários"
+                >
+                  <Users size={24} />
+                </button>
+              )}
               <button 
                 onClick={() => handleNavigate('audit')}
                 className={`p-3 rounded-xl transition-all ${currentView === 'audit' ? 'bg-emerald-500 text-white shadow-lg shadow-emerald-500/20' : 'text-slate-500 hover:bg-slate-800 hover:text-white'}`}
@@ -434,12 +484,14 @@ const App: React.FC = () => {
 
             <div className="w-8 h-px bg-slate-800"></div>
 
-            <div className="text-emerald-500 animate-pulse" title="Preenchendo Documento">
-              {currentView === 'form' && <ClipboardCheck size={24} />}
-              {currentView === 'oficio' && <FileWarning size={24} />}
-              {currentView === 'notificacao' && <Bell size={24} />}
-              {currentView === 'controle_notificacoes' && <Database size={24} />}
-            </div>
+            <button
+              type="button"
+              onClick={() => void signOut()}
+              className="p-3 rounded-xl text-slate-400 hover:bg-rose-600/90 hover:text-white transition-all cursor-pointer"
+              title="Sair"
+            >
+              <LogOut size={20} />
+            </button>
           </div>
         )}
       </aside>
@@ -521,46 +573,48 @@ const App: React.FC = () => {
             </button>
 
             {/* Quick Create Dropdown */}
-            <div className="relative">
-              <button
-                type="button"
-                onClick={() => setIsQuickCreateOpen((prev) => !prev)}
-                className="flex items-center gap-1.5 px-3.5 py-2 text-xs font-black uppercase tracking-wider text-white bg-emerald-600 hover:bg-emerald-700 rounded-xl transition-all shadow-sm hover:shadow-emerald-600/20 active:scale-95 cursor-pointer"
-              >
-                <Plus size={15} />
-                <span>Novo</span>
-                <ChevronDown size={14} className={`opacity-70 transition-transform ${isQuickCreateOpen ? 'rotate-180' : ''}`} />
-              </button>
+            {canEdit && (
+              <div className="relative">
+                <button
+                  type="button"
+                  onClick={() => setIsQuickCreateOpen((prev) => !prev)}
+                  className="flex items-center gap-1.5 px-3.5 py-2 text-xs font-black uppercase tracking-wider text-white bg-emerald-600 hover:bg-emerald-700 rounded-xl transition-all shadow-sm hover:shadow-emerald-600/20 active:scale-95 cursor-pointer"
+                >
+                  <Plus size={15} />
+                  <span>Novo</span>
+                  <ChevronDown size={14} className={`opacity-70 transition-transform ${isQuickCreateOpen ? 'rotate-180' : ''}`} />
+                </button>
 
-              {isQuickCreateOpen && (
-                <div className="absolute right-0 top-full mt-1.5 w-56 bg-white rounded-2xl shadow-xl border border-slate-200 py-1.5 z-50 animate-in fade-in-0 zoom-in-95">
-                  <button
-                    type="button"
-                    onClick={() => handleNavigate('form')}
-                    className="w-full px-3.5 py-2.5 text-left text-xs font-bold text-slate-700 hover:text-emerald-700 hover:bg-emerald-50 flex items-center gap-2.5 transition-colors cursor-pointer"
-                  >
-                    <ClipboardCheck size={15} className="text-emerald-600" />
-                    <span>Novo Parecer</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => handleNavigate('oficio')}
-                    className="w-full px-3.5 py-2.5 text-left text-xs font-bold text-slate-700 hover:text-amber-700 hover:bg-amber-50 flex items-center gap-2.5 transition-colors cursor-pointer"
-                  >
-                    <FileWarning size={15} className="text-amber-600" />
-                    <span>Novo Ofício</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => handleNavigate('notificacao')}
-                    className="w-full px-3.5 py-2.5 text-left text-xs font-bold text-slate-700 hover:text-violet-700 hover:bg-violet-50 flex items-center gap-2.5 transition-colors cursor-pointer"
-                  >
-                    <Bell size={15} className="text-violet-600" />
-                    <span>Nova Notificação</span>
-                  </button>
-                </div>
-              )}
-            </div>
+                {isQuickCreateOpen && (
+                  <div className="absolute right-0 top-full mt-1.5 w-56 bg-white rounded-2xl shadow-xl border border-slate-200 py-1.5 z-50 animate-in fade-in-0 zoom-in-95">
+                    <button
+                      type="button"
+                      onClick={() => handleNavigate('form')}
+                      className="w-full px-3.5 py-2.5 text-left text-xs font-bold text-slate-700 hover:text-emerald-700 hover:bg-emerald-50 flex items-center gap-2.5 transition-colors cursor-pointer"
+                    >
+                      <ClipboardCheck size={15} className="text-emerald-600" />
+                      <span>Novo Parecer</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleNavigate('oficio')}
+                      className="w-full px-3.5 py-2.5 text-left text-xs font-bold text-slate-700 hover:text-amber-700 hover:bg-amber-50 flex items-center gap-2.5 transition-colors cursor-pointer"
+                    >
+                      <FileWarning size={15} className="text-amber-600" />
+                      <span>Novo Ofício</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleNavigate('notificacao')}
+                      className="w-full px-3.5 py-2.5 text-left text-xs font-bold text-slate-700 hover:text-violet-700 hover:bg-violet-50 flex items-center gap-2.5 transition-colors cursor-pointer"
+                    >
+                      <Bell size={15} className="text-violet-600" />
+                      <span>Nova Notificação</span>
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
           </div>
         </header>
 
@@ -573,6 +627,7 @@ const App: React.FC = () => {
               onEditParecer={(p) => handleNavigate('form', p)}
               onViewParecer={(p) => handleNavigate('form', p, true)}
               onEditOficio={(o) => handleNavigate('oficio', o)}
+              onViewOficio={(o) => handleNavigate('oficio', o, true)}
               onEditNotificacao={(n) => {
                 setReturnView('dashboard');
                 handleNavigate('notificacao', n);
@@ -619,7 +674,7 @@ const App: React.FC = () => {
           ) : currentView === 'form' ? (
             <OpinionForm 
               initialData={editingDocument as ParecerData}
-              readOnly={isViewOnly}
+              readOnly={isViewOnly || !canEdit}
               onBack={() => {
                 handleNavigate('dashboard');
                 refreshData?.();
@@ -629,7 +684,7 @@ const App: React.FC = () => {
           ) : currentView === 'oficio' ? (
             <OficioForm 
               initialData={editingDocument as OficioData}
-              readOnly={isViewOnly}
+              readOnly={isViewOnly || !canEdit}
               onBack={() => {
                 handleNavigate('dashboard');
                 refreshData?.();
@@ -638,14 +693,32 @@ const App: React.FC = () => {
           ) : currentView === 'notificacao' ? (
             <NotificaForm 
               initialData={editingDocument as any}
-              readOnly={isViewOnly}
+              readOnly={isViewOnly || !canEdit}
               onBack={() => {
                 handleNavigate(returnView || 'dashboard');
                 refreshData?.();
               }} 
             />
-          ) : currentView === 'users' ? (
+          ) : currentView === 'users' && isAdmin ? (
             <UserManagement />
+          ) : currentView === 'users' ? (
+            <Dashboard 
+              onNewParecer={() => handleNavigate('form')} 
+              onNewOficio={() => handleNavigate('oficio')}
+              onNewNotificacao={() => handleNavigate('notificacao')}
+              onEditParecer={(p) => handleNavigate('form', p)}
+              onViewParecer={(p) => handleNavigate('form', p, true)}
+              onEditOficio={(o) => handleNavigate('oficio', o)}
+              onViewOficio={(o) => handleNavigate('oficio', o, true)}
+              onEditNotificacao={(n) => {
+                setReturnView('dashboard');
+                handleNavigate('notificacao', n);
+              }}
+              onViewNotificacao={(n) => {
+                setReturnView('dashboard');
+                handleNavigate('notificacao', n, true);
+              }}
+            />
           ) : currentView === 'audit' ? (
             <AuditLogs />
           ) : currentView === 'ecossistema' ? (

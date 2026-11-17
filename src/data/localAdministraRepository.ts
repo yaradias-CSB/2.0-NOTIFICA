@@ -19,6 +19,7 @@ import {
   sanitizeObject,
   stripSensitiveFields,
 } from '../lib/security';
+import { authFetch } from '../lib/supabase';
 
 const ADMINISTRA_STORAGE_KEYS = {
   EMPREENDEDORES: 'administra_barragens_empreendedores',
@@ -134,7 +135,7 @@ async function fetchRemoteBootstrap(): Promise<BootstrapPayload> {
 
   inflightBootstrap = (async () => {
     try {
-      const res = await fetch('/api/registry/bootstrap');
+      const res = await authFetch('/api/registry/bootstrap');
       if (!res.ok) {
         return { remoteEnabled: false, empreendedores: [], barragens: [], responsaveisTecnicos: [] };
       }
@@ -157,23 +158,32 @@ async function fetchRemoteBootstrap(): Promise<BootstrapPayload> {
   return inflightBootstrap;
 }
 
+async function parseErrorMessage(res: Response, fallback: string): Promise<string> {
+  try {
+    const payload = await res.json();
+    if (payload?.error) return String(payload.error);
+    if (payload?.message) return String(payload.message);
+  } catch {
+    // Ignore non-JSON error body
+  }
+  return fallback;
+}
+
 async function syncRemoteItem<T>(path: string, item: T): Promise<T> {
   if (typeof window === 'undefined' || (typeof navigator !== 'undefined' && !navigator.onLine)) {
     return item;
   }
-  try {
-    const res = await fetch(path, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(stripSensitiveFields(item)),
-    });
-    if (!res.ok) return item;
-    const data = await res.json();
-    if (data?.synced && data?.item) {
-      return data.item as T;
-    }
-  } catch {
-    // Fallback to local cache seamlessly
+  const res = await authFetch(path, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(stripSensitiveFields(item)),
+  });
+  if (!res.ok) {
+    throw new Error(await parseErrorMessage(res, `Falha na gravação remota (HTTP ${res.status}).`));
+  }
+  const data = await res.json();
+  if (data?.synced && data?.item) {
+    return data.item as T;
   }
   return item;
 }
@@ -182,10 +192,9 @@ async function deleteRemoteItem(path: string): Promise<void> {
   if (typeof window === 'undefined' || (typeof navigator !== 'undefined' && !navigator.onLine)) {
     return;
   }
-  try {
-    await fetch(path, { method: 'DELETE' });
-  } catch {
-    // Ignore network error during remote delete fallback
+  const res = await authFetch(path, { method: 'DELETE' });
+  if (!res.ok) {
+    throw new Error(await parseErrorMessage(res, `Falha na exclusão remota (HTTP ${res.status}).`));
   }
 }
 
@@ -280,11 +289,12 @@ export class LocalAdministraRepository implements AdministraRegistryRepository {
       );
     }
 
+    await deleteRemoteItem(`/api/registry/empreendedores/${encodeURIComponent(safeId)}`);
     writeList(
       ADMINISTRA_STORAGE_KEYS.EMPREENDEDORES,
       current.filter((e) => e.id !== safeId)
     );
-    await deleteRemoteItem(`/api/registry/empreendedores/${encodeURIComponent(safeId)}`);
+    lastBootstrapResult = null;
   }
 
   async getBarragens(): Promise<BarragemCanonica[]> {
@@ -374,11 +384,12 @@ export class LocalAdministraRepository implements AdministraRegistryRepository {
       );
     }
 
+    await deleteRemoteItem(`/api/registry/barragens/${encodeURIComponent(safeId)}`);
     writeList(
       ADMINISTRA_STORAGE_KEYS.BARRAGENS,
       current.filter((b) => b.id !== safeId)
     );
-    await deleteRemoteItem(`/api/registry/barragens/${encodeURIComponent(safeId)}`);
+    lastBootstrapResult = null;
   }
 
   async getResponsaveisTecnicos(): Promise<ResponsavelTecnicoCanonico[]> {
@@ -552,11 +563,12 @@ export class LocalAdministraRepository implements AdministraRegistryRepository {
       );
     }
 
+    await deleteRemoteItem(`/api/registry/responsaveis_tecnicos/${encodeURIComponent(safeId)}`);
     writeList(
       ADMINISTRA_STORAGE_KEYS.RTS,
       current.filter((rt) => rt.id !== safeId)
     );
-    await deleteRemoteItem(`/api/registry/responsaveis_tecnicos/${encodeURIComponent(safeId)}`);
+    lastBootstrapResult = null;
   }
 
   async syncFromFormSubmission(input: FormEntitySyncInput): Promise<FormEntitySyncResult> {

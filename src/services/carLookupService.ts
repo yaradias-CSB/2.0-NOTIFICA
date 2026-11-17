@@ -3,6 +3,7 @@ import { BarragemCanonica, EmpreendedorCanonico } from '../types/ecosystem';
 import { resolveDecimalCoords } from './satelliteCaptureService';
 import { normalizeCarCode, normalizeSearchText } from '../data/localAdministraRepository';
 import { formatCpfCnpj, normalizeDocumentNumber } from '../lib/security';
+import { authFetch } from '../lib/supabase';
 import { OPS_MUNICIPIOS } from '../constants';
 
 const PUBLIC_SEMA_SHEET_URL =
@@ -264,7 +265,7 @@ export async function lookupDataByCoordinates(params: {
   let gisError: string | undefined;
 
   const [gisResponse, sheetRows, snisbRows] = await Promise.all([
-    fetch(`/api/gis/car-by-coords?lat=${encodeURIComponent(decimal.lat)}&lng=${encodeURIComponent(decimal.lng)}`)
+    authFetch(`/api/gis/car-by-coords?lat=${encodeURIComponent(decimal.lat)}&lng=${encodeURIComponent(decimal.lng)}`)
       .then(async (r) => {
         const json = await r.json();
         if (!r.ok && json?.error) gisError = json.error;

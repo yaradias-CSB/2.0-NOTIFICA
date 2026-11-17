@@ -20,6 +20,7 @@ import { DocumentTypeChart } from './dashboard/DocumentTypeChart';
 import { ProductivityCharts } from './dashboard/ProductivityCharts';
 import { DocumentList } from './dashboard/DocumentList';
 import { MTMap } from './dashboard/MTMap';
+import { useAuth } from '../contexts/AuthContext';
 
 interface DashboardProps {
   onNewParecer: () => void;
@@ -57,6 +58,7 @@ const Dashboard: React.FC<DashboardProps> = ({
   onViewNotificacao
 }) => {
   const { pareceres, oficios, notificacoes, documents, loading, deleteParecer, deleteOficio, deleteNotificacao } = useContext(DataContext);
+  const { canEdit, canDelete } = useAuth();
   
   const [filters, setFilters] = useState({
     municipios: [] as string[],
@@ -78,6 +80,10 @@ const Dashboard: React.FC<DashboardProps> = ({
   const handleEdit = React.useCallback((item: AppDocument) => {
     if (item.tipo_documento?.startsWith('Parecer Técnico')) {
       const p = item as ParecerData;
+      if (!canEdit) {
+        onViewParecer?.(p);
+        return;
+      }
       if (p.status === 'Concluído') {
         if (window.confirm('Este parecer já está concluído. Deseja realmente alterá-lo?')) {
           onEditParecer?.(p);
@@ -86,18 +92,27 @@ const Dashboard: React.FC<DashboardProps> = ({
         onEditParecer?.(p);
       }
     } else if (item.tipo_documento === 'Ofício de Pendências' || item.tipo_documento === '1° Oficio de Pendencias' || item.tipo_documento === '2° Oficio de Pendencias' || item.tipo_documento === 'Oficio Geral') {
+      if (!canEdit) {
+        onViewOficio?.(item as OficioData);
+        return;
+      }
       onEditOficio?.(item as OficioData);
     } else if (item.tipo_documento === 'Notificação') {
       const n = item as NotificacaoData;
+      if (!canEdit) {
+        onViewNotificacao?.(n);
+        return;
+      }
       if (onEditNotificacao) {
         onEditNotificacao(n);
       } else {
         onViewNotificacao?.(n);
       }
     }
-  }, [onEditParecer, onEditOficio, onEditNotificacao, onViewNotificacao]);
+  }, [canEdit, onEditParecer, onViewParecer, onEditOficio, onViewOficio, onEditNotificacao, onViewNotificacao]);
 
   const handleDelete = React.useCallback(async (id: string, item: AppDocument) => {
+    if (!canDelete) return;
     const docName = item.tipo_documento?.startsWith('Parecer Técnico') ? 'parecer' : 
                     (item.tipo_documento === 'Ofício de Pendências' || item.tipo_documento === '1° Oficio de Pendencias' || item.tipo_documento === '2° Oficio de Pendencias' || item.tipo_documento === 'Oficio Geral') ? 'ofício' : 'notificação';
     if (window.confirm(`Tem certeza que deseja excluir este ${docName}?`)) {
@@ -112,7 +127,7 @@ const Dashboard: React.FC<DashboardProps> = ({
         alert(`Erro ao excluir: ${result.message}`);
       }
     }
-  }, [deleteParecer, deleteOficio, deleteNotificacao]);
+  }, [canDelete, deleteParecer, deleteOficio, deleteNotificacao]);
 
   const availableMonths = useMemo(() => {
     const months = new Set<string>();
@@ -450,15 +465,19 @@ const Dashboard: React.FC<DashboardProps> = ({
             >
               <Database size={18} /> Filtros {filters.municipios.length + filters.dpa.length + filters.cri.length + filters.rt.length + filters.analistas.length + filters.status.length + filters.tipoDocumento.length + filters.datas.length > 0 && `(${filters.municipios.length + filters.dpa.length + filters.cri.length + filters.rt.length + filters.analistas.length + filters.status.length + filters.tipoDocumento.length + filters.datas.length})`}
             </button>
-            <button onClick={onNewParecer} className="flex-1 sm:flex-none bg-slate-900 hover:bg-emerald-600 text-white px-4 py-3 rounded-xl shadow-lg transition-all font-bold flex items-center justify-center gap-2 text-xs">
-              <Plus size={18} /> Parecer
-            </button>
-            <button onClick={onNewOficio} className="flex-1 sm:flex-none bg-white border border-slate-200 hover:border-emerald-500 text-slate-700 px-4 py-3 rounded-xl shadow-sm transition-all font-bold flex items-center justify-center gap-2 text-xs">
-              <FileText size={18} /> Ofício
-            </button>
-            <button onClick={onNewNotificacao} className="flex-1 sm:flex-none bg-white border border-slate-200 hover:border-amber-500 text-slate-700 px-4 py-3 rounded-xl shadow-sm transition-all font-bold flex items-center justify-center gap-2 text-xs">
-              <Plus size={18} className="text-amber-500" /> Notificação
-            </button>
+            {canEdit && (
+              <>
+                <button onClick={onNewParecer} className="flex-1 sm:flex-none bg-slate-900 hover:bg-emerald-600 text-white px-4 py-3 rounded-xl shadow-lg transition-all font-bold flex items-center justify-center gap-2 text-xs">
+                  <Plus size={18} /> Parecer
+                </button>
+                <button onClick={onNewOficio} className="flex-1 sm:flex-none bg-white border border-slate-200 hover:border-emerald-500 text-slate-700 px-4 py-3 rounded-xl shadow-sm transition-all font-bold flex items-center justify-center gap-2 text-xs">
+                  <FileText size={18} /> Ofício
+                </button>
+                <button onClick={onNewNotificacao} className="flex-1 sm:flex-none bg-white border border-slate-200 hover:border-amber-500 text-slate-700 px-4 py-3 rounded-xl shadow-sm transition-all font-bold flex items-center justify-center gap-2 text-xs">
+                  <Plus size={18} className="text-amber-500" /> Notificação
+                </button>
+              </>
+            )}
           </div>
         </div>
       </div>
@@ -532,6 +551,8 @@ const Dashboard: React.FC<DashboardProps> = ({
         documents={filteredDocuments}
         handleEdit={handleEdit}
         handleDelete={handleDelete}
+        canEdit={canEdit}
+        canDelete={canDelete}
       />
     </div>
   );

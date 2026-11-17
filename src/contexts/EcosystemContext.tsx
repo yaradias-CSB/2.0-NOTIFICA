@@ -23,6 +23,7 @@ import {
 } from '../data';
 import { createEmptyDiagnostics } from '../data/localEcosystemRepository';
 import { DataContext } from './DataContext';
+import { useAuth } from './AuthContext';
 import { logActivity } from '../lib/audit';
 
 interface EcosystemContextType {
@@ -167,6 +168,7 @@ function normalizeDigits(value?: string): string {
 
 export const EcosystemProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
   const { pareceres, oficios, notificacoes, loading: docsLoading } = useContext(DataContext);
+  const { canEdit, profile, user } = useAuth();
 
   const [empreendedores, setEmpreendedores] = useState<EmpreendedorCanonico[]>([]);
   const [barragens, setBarragens] = useState<BarragemCanonica[]>([]);
@@ -257,7 +259,7 @@ export const EcosystemProvider: React.FC<{ children: ReactNode }> = ({ children 
 
   // Automatically index existing local Notifica CSB documents into Administra registry once on initial load
   useEffect(() => {
-    if (docsLoading || bootstrappedRef.current) return;
+    if (docsLoading || !canEdit || bootstrappedRef.current) return;
     const totalDocs = pareceres.length + oficios.length + notificacoes.length;
     if (totalDocs === 0) return;
 
@@ -397,7 +399,7 @@ export const EcosystemProvider: React.FC<{ children: ReactNode }> = ({ children 
     };
 
     void indexExistingDocs();
-  }, [docsLoading, pareceres, oficios, notificacoes, refreshEcosystem]);
+  }, [docsLoading, canEdit, pareceres, oficios, notificacoes, refreshEcosystem]);
 
   const localProducts = useMemo<EcosystemProductSummary[]>(() => {
     const items: EcosystemProductSummary[] = [];
@@ -637,10 +639,11 @@ export const EcosystemProvider: React.FC<{ children: ReactNode }> = ({ children 
     reviewNotes?: string
   ) => {
     try {
+      const effectiveReviewer = profile?.nome || user?.email || reviewerName;
       const reviewed = await ecosystemRepository.reviewChangeRequest(
         id,
         decision,
-        reviewerName,
+        effectiveReviewer,
         reviewNotes
       );
       await refreshEcosystem();

@@ -132,9 +132,9 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       });
 
       return { success: true };
-    } catch (err) {
+    } catch (err: any) {
       console.error('Erro ao excluir parecer:', err);
-      return { success: false, message: 'Erro ao excluir parecer' };
+      return { success: false, message: err?.message || 'Erro ao excluir parecer' };
     }
   };
 
@@ -150,9 +150,9 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       });
 
       return { success: true };
-    } catch (err) {
+    } catch (err: any) {
       console.error('Erro ao excluir ofício:', err);
-      return { success: false, message: 'Erro ao excluir ofício' };
+      return { success: false, message: err?.message || 'Erro ao excluir ofício' };
     }
   };
 
@@ -168,9 +168,9 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       });
 
       return { success: true };
-    } catch (err) {
+    } catch (err: any) {
       console.error('Erro ao excluir fiscalização:', err);
-      return { success: false, message: 'Erro ao excluir fiscalização' };
+      return { success: false, message: err?.message || 'Erro ao excluir fiscalização' };
     }
   };
 
@@ -193,9 +193,9 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       });
 
       return { success: true };
-    } catch (err) {
+    } catch (err: any) {
       console.error('Erro ao excluir notificação:', err);
-      return { success: false, message: 'Erro ao excluir notificação' };
+      return { success: false, message: err?.message || 'Erro ao excluir notificação' };
     }
   };
 

@@ -1,14 +1,16 @@
 import React from 'react';
-import { Edit, Trash2 } from 'lucide-react';
+import { Edit, Eye, Trash2 } from 'lucide-react';
 import { AppDocument } from '../../contexts/DataContext';
 
 interface DocumentListProps {
   documents: AppDocument[];
   handleEdit: (item: AppDocument) => void;
   handleDelete: (id: string, item: AppDocument) => void;
+  canEdit?: boolean;
+  canDelete?: boolean;
 }
 
-export const DocumentList = React.memo<DocumentListProps>(({ documents, handleEdit, handleDelete }) => {
+export const DocumentList = React.memo<DocumentListProps>(({ documents, handleEdit, handleDelete, canEdit = true, canDelete = false }) => {
   return (
     <div className="bg-white rounded-2xl shadow-md border border-slate-200 overflow-hidden">
       <div className="p-4 md:p-6 border-b border-slate-100 bg-slate-50/50 flex justify-between items-center">
@@ -32,8 +34,12 @@ export const DocumentList = React.memo<DocumentListProps>(({ documents, handleEd
                  item.tipo_documento === 'Notificação' ? 'Notificação' : 'Ofício'}
               </span>
               <div className="flex gap-1">
-                <button onClick={() => handleEdit(item)} className="p-2 text-slate-400 hover:text-blue-600 bg-slate-50 rounded-lg"><Edit size={14} /></button>
-                <button onClick={() => item.id && handleDelete(item.id, item)} className="p-2 text-slate-400 hover:text-red-600 bg-slate-50 rounded-lg"><Trash2 size={14} /></button>
+                <button onClick={() => handleEdit(item)} className="p-2 text-slate-400 hover:text-blue-600 bg-slate-50 rounded-lg" title={canEdit ? 'Editar' : 'Visualizar'}>
+                  {canEdit ? <Edit size={14} /> : <Eye size={14} />}
+                </button>
+                {canDelete && (
+                  <button onClick={() => item.id && handleDelete(item.id, item)} className="p-2 text-slate-400 hover:text-red-600 bg-slate-50 rounded-lg" title="Excluir"><Trash2 size={14} /></button>
+                )}
               </div>
             </div>
             <div>
@@ -139,8 +145,12 @@ export const DocumentList = React.memo<DocumentListProps>(({ documents, handleEd
                 </td>
                 <td className="px-6 py-4 text-right">
                   <div className="flex justify-end gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
-                    <button onClick={() => handleEdit(item)} className="p-2 text-slate-400 hover:text-blue-600 bg-white border border-slate-100 rounded-lg shadow-sm transition-all hover:scale-110" title="Editar"><Edit size={14} /></button>
-                    <button onClick={() => item.id && handleDelete(item.id, item)} className="p-2 text-slate-400 hover:text-red-600 bg-white border border-slate-100 rounded-lg shadow-sm transition-all hover:scale-110" title="Excluir"><Trash2 size={14} /></button>
+                    <button onClick={() => handleEdit(item)} className="p-2 text-slate-400 hover:text-blue-600 bg-white border border-slate-100 rounded-lg shadow-sm transition-all hover:scale-110" title={canEdit ? 'Editar' : 'Visualizar'}>
+                      {canEdit ? <Edit size={14} /> : <Eye size={14} />}
+                    </button>
+                    {canDelete && (
+                      <button onClick={() => item.id && handleDelete(item.id, item)} className="p-2 text-slate-400 hover:text-red-600 bg-white border border-slate-100 rounded-lg shadow-sm transition-all hover:scale-110" title="Excluir"><Trash2 size={14} /></button>
+                    )}
                   </div>
                 </td>
               </tr>

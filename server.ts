@@ -25,6 +25,91 @@ interface RemoteServiceConfig {
   token: string;
 }
 
+type UserRole = "Administrador" | "Analista" | "Visualizador";
+
+interface AuthenticatedUser {
+  id: string;
+  email: string;
+  nome: string;
+  perfil: UserRole;
+}
+
+type AuthenticatedRequest = express.Request & {
+  authUser?: AuthenticatedUser;
+};
+
+function normalizeUserRole(raw: unknown): UserRole | null {
+  const val = String(raw || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .trim();
+  if (val === "administrador" || val === "admin") return "Administrador";
+  if (val === "analista") return "Analista";
+  if (val === "visualizador" || val === "viewer") return "Visualizador";
+  return null;
+}
+
+function getNotificaAuthBaseUrl(notificaCfg: RemoteServiceConfig | null): string {
+  const raw =
+    process.env.NOTIFICA_SUPABASE_URL?.trim() ||
+    notificaCfg?.endpoint ||
+    "";
+  return raw.replace(/\/rest\/v1\/?$/i, "").replace(/\/+$/, "");
+}
+
+function getNotificaAuthApiKey(notificaCfg: RemoteServiceConfig | null): string {
+  return (
+    process.env.NOTIFICA_SUPABASE_ANON_KEY?.trim() ||
+    process.env.VITE_SUPABASE_ANON_KEY?.trim() ||
+    process.env.NOTIFICA_SUPABASE_SERVICE_ROLE_KEY?.trim() ||
+    notificaCfg?.token ||
+    ""
+  );
+}
+
+function canViewFullDocument(req: express.Request): boolean {
+  const role = (req as AuthenticatedRequest).authUser?.perfil;
+  return role === "Administrador" || role === "Analista";
+}
+
+function maskCpfCnpjValue(rawValue?: string, digitsHint?: string): string | undefined {
+  const digits = normalizeDigits(digitsHint || rawValue);
+  if (!digits) {
+    return rawValue ? "***" : undefined;
+  }
+  if (digits.length === 11) {
+    return `***.***.***-${digits.slice(-2)}`;
+  }
+  if (digits.length === 14) {
+    return `**.***.***/****-${digits.slice(-2)}`;
+  }
+  return "***";
+}
+
+function maskEmpreendedorItem<T extends ReturnType<typeof mapRemoteEmpreendedor>>(item: T): T {
+  const masked = maskCpfCnpjValue(item.cpfCnpj, item.cpfCnpjNormalizado) || "***";
+  return {
+    ...item,
+    cpfCnpj: masked,
+    cpfCnpjNormalizado: "",
+  };
+}
+
+function maskBarragemItem<T extends ReturnType<typeof mapRemoteBarragem>>(item: T): T {
+  return {
+    ...item,
+    empreendedorCpfCnpj: item.empreendedorCpfCnpj ? maskCpfCnpjValue(item.empreendedorCpfCnpj) : undefined,
+  };
+}
+
+function maskRtItem<T extends ReturnType<typeof mapRemoteRT>>(item: T): T {
+  return {
+    ...item,
+    cpf: item.cpf ? maskCpfCnpjValue(item.cpf) : undefined,
+  };
+}
+
 function getServiceConfig(prefix: "CENTRAL" | "NOTIFICA" | "CLASSIFICA" | "FISCALIZA"): RemoteServiceConfig | null {
   const candidates: Array<[string | undefined, string | undefined]> =
     prefix === "CENTRAL"
@@ -630,10 +715,106 @@ function translateCarTipo(code: string): string {
   return map[String(code || "").toUpperCase()] || code || "Imóvel Rural";
 }
 
-// Health check
+// Health check (público)
 app.get("/api/health", (_req, res) => {
   res.json({ status: "ok" });
 });
+
+async function requireAuth(req: express.Request, res: express.Response, next: express.NextFunction) {
+  const authHeader = String(req.headers.authorization || "");
+  if (!authHeader.startsWith("Bearer ")) {
+    return res.status(401).json({ error: "Token de autenticação ausente." });
+  }
+  const token = authHeader.slice(7).trim();
+  if (!token) {
+    return res.status(401).json({ error: "Token de autenticação inválido." });
+  }
+
+  const notificaCfg = getServiceConfig("NOTIFICA");
+  const authBaseUrl = getNotificaAuthBaseUrl(notificaCfg);
+  const authApiKey = getNotificaAuthApiKey(notificaCfg);
+
+  if (!authBaseUrl || !authApiKey || !notificaCfg) {
+    return res.status(403).json({ error: "Serviço de autenticação do Notifica não configurado." });
+  }
+
+  let email = "";
+  let authUserId = "";
+  try {
+    const authRes = await fetch(`${authBaseUrl}/auth/v1/user`, {
+      method: "GET",
+      headers: {
+        apikey: authApiKey,
+        Authorization: `Bearer ${token}`,
+      },
+      signal: AbortSignal.timeout(8000),
+    });
+    if (!authRes.ok) {
+      return res.status(401).json({ error: "Sessão inválida ou expirada." });
+    }
+    const authUser = (await authRes.json()) as { id?: string; email?: string };
+    email = String(authUser?.email || "").trim().toLowerCase();
+    authUserId = String(authUser?.id || "");
+    if (!email) {
+      return res.status(401).json({ error: "Usuário autenticado sem e-mail válido." });
+    }
+  } catch {
+    return res.status(401).json({ error: "Falha ao validar sessão de autenticação." });
+  }
+
+  const cleanEmailPattern = email.replace(/[%*]/g, "");
+  const perfilRes = await remoteRestRequest<Array<{
+    id?: string;
+    email?: string;
+    nome?: string;
+    perfil?: string;
+    status?: string;
+  }>>(notificaCfg, "perfis_usuarios", {
+    query: `select=id,email,nome,perfil,status&email=ilike.${encodeURIComponent(cleanEmailPattern)}&limit=10`,
+  });
+
+  if (!perfilRes.ok || !Array.isArray(perfilRes.data)) {
+    return res.status(403).json({ error: "Não foi possível verificar o perfil de acesso do usuário." });
+  }
+
+  const matched = perfilRes.data.find(
+    (row) => String(row?.email || "").trim().toLowerCase() === email
+  );
+  if (!matched) {
+    return res.status(403).json({ error: "Usuário não autorizado neste sistema." });
+  }
+
+  const normalizedStatus = String(matched.status || "").trim().toLowerCase();
+  if (normalizedStatus !== "ativo") {
+    return res.status(403).json({ error: "Perfil de usuário inativo ou bloqueado." });
+  }
+
+  const perfil = normalizeUserRole(matched.perfil);
+  if (!perfil) {
+    return res.status(403).json({ error: "Perfil de acesso inválido." });
+  }
+
+  (req as AuthenticatedRequest).authUser = {
+    id: authUserId || String(matched.id || ""),
+    email,
+    nome: String(matched.nome || email).trim(),
+    perfil,
+  };
+
+  return next();
+}
+
+function requireRole(allowedRoles: UserRole[]) {
+  return (req: express.Request, res: express.Response, next: express.NextFunction) => {
+    const authUser = (req as AuthenticatedRequest).authUser;
+    if (!authUser || !allowedRoles.includes(authUser.perfil)) {
+      return res.status(403).json({ error: "Permissão insuficiente para executar esta ação." });
+    }
+    return next();
+  };
+}
+
+app.use("/api", requireAuth);
 
 // Status booleans for ecosystem integrations (never exposes URLs, credentials, or vendor names)
 app.get("/api/ecosystem/status", (_req, res) => {
@@ -825,11 +1006,18 @@ app.get("/api/ecosystem/integrated-data", async (req, res) => {
     })
   );
 
+  const includeFullDoc = canViewFullDocument(req);
+
   return res.json({
-    empreendedores: allEmps,
-    barragens: allBars,
-    responsaveisTecnicos: allRts,
-    products: allProducts,
+    empreendedores: includeFullDoc ? allEmps : allEmps.map(maskEmpreendedorItem),
+    barragens: includeFullDoc ? allBars : allBars.map(maskBarragemItem),
+    responsaveisTecnicos: includeFullDoc ? allRts : allRts.map(maskRtItem),
+    products: includeFullDoc
+      ? allProducts
+      : allProducts.map((p) => ({
+          ...p,
+          empreendedorCpfCnpj: p.empreendedorCpfCnpj ? maskCpfCnpjValue(p.empreendedorCpfCnpj) : undefined,
+        })),
     diagnostics,
     fetchedAt: new Date().toISOString(),
   });
@@ -931,7 +1119,7 @@ app.get("/api/gis/car-by-coords", async (req, res) => {
 });
 
 // Central Registry Proxy (Administra Barragens)
-app.get("/api/registry/bootstrap", async (_req, res) => {
+app.get("/api/registry/bootstrap", async (req, res) => {
   const cfg = getServiceConfig("CENTRAL");
   if (!cfg) {
     return res.json({
@@ -991,11 +1179,13 @@ app.get("/api/registry/bootstrap", async (_req, res) => {
     barragens
   );
 
+  const includeFullDoc = canViewFullDocument(req);
+
   return res.json({
     remoteEnabled: Boolean(empsRes.ok || barsViewRes.ok || barsRes.ok || rtsPrimaryRes.ok || rtsFallbackRes.ok),
-    empreendedores,
-    barragens,
-    responsaveisTecnicos,
+    empreendedores: includeFullDoc ? empreendedores : empreendedores.map(maskEmpreendedorItem),
+    barragens: includeFullDoc ? barragens : barragens.map(maskBarragemItem),
+    responsaveisTecnicos: includeFullDoc ? responsaveisTecnicos : responsaveisTecnicos.map(maskRtItem),
   });
 });
 
@@ -1111,11 +1301,13 @@ app.get("/api/registry/search", async (req, res) => {
         .slice(0, 50)
     : [];
 
+  const includeFullDoc = canViewFullDocument(req);
+
   return res.json({
     remoteEnabled: true,
-    empreendedores,
-    barragens,
-    responsaveisTecnicos,
+    empreendedores: includeFullDoc ? empreendedores : empreendedores.map(maskEmpreendedorItem),
+    barragens: includeFullDoc ? barragens : barragens.map(maskBarragemItem),
+    responsaveisTecnicos: includeFullDoc ? responsaveisTecnicos : responsaveisTecnicos.map(maskRtItem),
   });
 });
 
@@ -1142,10 +1334,14 @@ function formatGmsString(part: { g?: string; m?: string; s?: string } | undefine
   return `${g || "0"}°${(m || "00").padStart(2, "0")}'${s || "00"}"`;
 }
 
-app.post("/api/registry/empreendedores", async (req, res) => {
+app.post("/api/registry/empreendedores", requireRole(["Administrador", "Analista"]), async (req, res) => {
   const cfg = getServiceConfig("CENTRAL");
   if (!cfg) {
-    return res.json({ remoteEnabled: false, item: req.body });
+    return res.status(503).json({
+      remoteEnabled: false,
+      synced: false,
+      error: "Integração com o Administra não configurada no servidor.",
+    });
   }
 
   const body = req.body || {};
@@ -1178,7 +1374,11 @@ app.post("/api/registry/empreendedores", async (req, res) => {
 
   const result = await upsertDocumentWithColumnFallback(cfg, "empreendedores", payload);
   if (!result.ok) {
-    return res.json({ remoteEnabled: true, synced: false, item: body });
+    return res.status(502).json({
+      remoteEnabled: true,
+      synced: false,
+      error: "Falha ao gravar empreendedor na base remota do Administra.",
+    });
   }
 
   return res.json({
@@ -1188,10 +1388,14 @@ app.post("/api/registry/empreendedores", async (req, res) => {
   });
 });
 
-app.post("/api/registry/barragens", async (req, res) => {
+app.post("/api/registry/barragens", requireRole(["Administrador", "Analista"]), async (req, res) => {
   const cfg = getServiceConfig("CENTRAL");
   if (!cfg) {
-    return res.json({ remoteEnabled: false, item: req.body });
+    return res.status(503).json({
+      remoteEnabled: false,
+      synced: false,
+      error: "Integração com o Administra não configurada no servidor.",
+    });
   }
 
   const body = req.body || {};
@@ -1245,7 +1449,11 @@ app.post("/api/registry/barragens", async (req, res) => {
 
   const result = await upsertDocumentWithColumnFallback(cfg, "barragens", payload);
   if (!result.ok) {
-    return res.json({ remoteEnabled: true, synced: false, item: body });
+    return res.status(502).json({
+      remoteEnabled: true,
+      synced: false,
+      error: "Falha ao gravar barragem na base remota do Administra.",
+    });
   }
 
   return res.json({
@@ -1255,10 +1463,14 @@ app.post("/api/registry/barragens", async (req, res) => {
   });
 });
 
-app.post("/api/registry/rts", async (req, res) => {
+app.post("/api/registry/rts", requireRole(["Administrador", "Analista"]), async (req, res) => {
   const cfg = getServiceConfig("CENTRAL");
   if (!cfg) {
-    return res.json({ remoteEnabled: false, item: req.body });
+    return res.status(503).json({
+      remoteEnabled: false,
+      synced: false,
+      error: "Integração com o Administra não configurada no servidor.",
+    });
   }
 
   const body = req.body || {};
@@ -1300,7 +1512,11 @@ app.post("/api/registry/rts", async (req, res) => {
   }
 
   if (!result.ok) {
-    return res.json({ remoteEnabled: true, synced: false, item: body });
+    return res.status(502).json({
+      remoteEnabled: true,
+      synced: false,
+      error: "Falha ao gravar responsável técnico na base remota do Administra.",
+    });
   }
 
   return res.json({
@@ -1310,17 +1526,21 @@ app.post("/api/registry/rts", async (req, res) => {
   });
 });
 
-app.post("/api/registry/rts/link-art", async (req, res) => {
+app.post("/api/registry/rts/link-art", requireRole(["Administrador", "Analista"]), async (req, res) => {
   const cfg = getServiceConfig("CENTRAL");
   const body = req.body || {};
   const art = String(body.art || "").trim();
   const rtNome = String(body.rtNome || "").trim();
   if (!art || !rtNome) {
-    return res.status(400).json({ remoteEnabled: Boolean(cfg), synced: false });
+    return res.status(400).json({ remoteEnabled: Boolean(cfg), synced: false, error: "Informe o nome do RT e o número da ART." });
   }
 
   if (!cfg) {
-    return res.json({ remoteEnabled: false, synced: false, item: body });
+    return res.status(503).json({
+      remoteEnabled: false,
+      synced: false,
+      error: "Integração com o Administra não configurada no servidor.",
+    });
   }
 
   const now = new Date().toISOString();
@@ -1396,23 +1616,35 @@ app.post("/api/registry/rts/link-art", async (req, res) => {
     },
   ];
 
+  if (!rtResult.ok && !linkResult.ok) {
+    return res.status(502).json({
+      remoteEnabled: true,
+      synced: false,
+      error: "Falha ao gravar vínculo de ART na base remota do Administra.",
+    });
+  }
+
   return res.json({
     remoteEnabled: true,
-    synced: Boolean(rtResult.ok || linkResult.ok),
+    synced: true,
     item: mappedRt,
   });
 });
 
 const ALLOWED_REGISTRY_TABLES = new Set(["empreendedores", "barragens", "rts", "responsaveis_tecnicos"]);
 
-app.delete("/api/registry/:kind/:id", async (req, res) => {
+app.delete("/api/registry/:kind/:id", requireRole(["Administrador"]), async (req, res) => {
   const { kind, id } = req.params;
   if (!ALLOWED_REGISTRY_TABLES.has(kind) || !id) {
-    return res.status(400).json({ remoteEnabled: false, deleted: false });
+    return res.status(400).json({ remoteEnabled: false, deleted: false, error: "Parâmetros inválidos." });
   }
   const cfg = getServiceConfig("CENTRAL");
   if (!cfg) {
-    return res.json({ remoteEnabled: false, deleted: false });
+    return res.status(503).json({
+      remoteEnabled: false,
+      deleted: false,
+      error: "Integração com o Administra não configurada no servidor.",
+    });
   }
   const targetTable = kind === "responsaveis_tecnicos" ? "rts" : kind;
   let result = await remoteRestRequest(cfg, targetTable, {
@@ -1425,7 +1657,14 @@ app.delete("/api/registry/:kind/:id", async (req, res) => {
       query: `id=eq.${encodeURIComponent(id)}`,
     });
   }
-  return res.json({ remoteEnabled: true, deleted: result.ok });
+  if (!result.ok) {
+    return res.status(502).json({
+      remoteEnabled: true,
+      deleted: false,
+      error: "Falha ao excluir registro na base remota do Administra.",
+    });
+  }
+  return res.json({ remoteEnabled: true, deleted: true });
 });
 
 // Notifica CSB Document Persistence Proxy (lean flat columns only)
@@ -1512,40 +1751,62 @@ app.get("/api/documents/:kind", async (req, res) => {
   });
 });
 
-app.post("/api/documents/:kind", async (req, res) => {
+app.post("/api/documents/:kind", requireRole(["Administrador", "Analista"]), async (req, res) => {
   const kind = req.params.kind;
   if (!ALLOWED_DOC_KINDS.has(kind)) {
-    return res.status(400).json({ remoteEnabled: false });
+    return res.status(400).json({ remoteEnabled: false, synced: false, error: "Tipo de documento inválido." });
   }
   const cfg = getServiceConfig("NOTIFICA");
   if (!cfg) {
-    return res.json({ remoteEnabled: false, synced: false });
+    return res.status(503).json({
+      remoteEnabled: false,
+      synced: false,
+      error: "Persistência remota do Notifica não configurada no servidor.",
+    });
   }
   const flatBody = sanitizeFlatRow(req.body || {});
   const result = await upsertDocumentWithColumnFallback(cfg, kind, flatBody);
+  if (!result.ok) {
+    return res.status(502).json({
+      remoteEnabled: true,
+      synced: false,
+      error: "Falha ao gravar documento na base remota do Notifica.",
+    });
+  }
   return res.json({
     remoteEnabled: true,
-    synced: result.ok,
+    synced: true,
     item: result.item,
   });
 });
 
-app.delete("/api/documents/:kind/:id", async (req, res) => {
+app.delete("/api/documents/:kind/:id", requireRole(["Administrador"]), async (req, res) => {
   const { kind, id } = req.params;
   if (!ALLOWED_DOC_KINDS.has(kind) || !id) {
-    return res.status(400).json({ remoteEnabled: false, deleted: false });
+    return res.status(400).json({ remoteEnabled: false, deleted: false, error: "Parâmetros inválidos." });
   }
   const cfg = getServiceConfig("NOTIFICA");
   if (!cfg) {
-    return res.json({ remoteEnabled: false, deleted: false });
+    return res.status(503).json({
+      remoteEnabled: false,
+      deleted: false,
+      error: "Persistência remota do Notifica não configurada no servidor.",
+    });
   }
   const result = await remoteRestRequest(cfg, kind, {
     method: "DELETE",
     query: `id=eq.${encodeURIComponent(id)}`,
   });
+  if (!result.ok) {
+    return res.status(502).json({
+      remoteEnabled: true,
+      deleted: false,
+      error: "Falha ao excluir documento na base remota do Notifica.",
+    });
+  }
   return res.json({
     remoteEnabled: true,
-    deleted: result.ok,
+    deleted: true,
   });
 });
 

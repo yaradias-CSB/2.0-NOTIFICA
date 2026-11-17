@@ -4,6 +4,7 @@ import {
   EcosystemSystemConnectionStatus,
   EcosystemSystemId,
 } from '../types/ecosystem';
+import { authFetch } from '../lib/supabase';
 
 const DEFAULT_SYSTEM_STATUS: Record<EcosystemSystemId, boolean> = {
   ADMINISTRA: false,
@@ -34,7 +35,7 @@ export function getEcosystemConnections(): EcosystemSystemConnectionStatus[] {
 
 export async function fetchEcosystemConnections(): Promise<EcosystemSystemConnectionStatus[]> {
   try {
-    const response = await fetch('/api/ecosystem/status');
+    const response = await authFetch('/api/ecosystem/status');
     if (!response.ok) return getEcosystemConnections();
     const data = (await response.json()) as {
       systems?: Partial<Record<EcosystemSystemId, boolean>>;

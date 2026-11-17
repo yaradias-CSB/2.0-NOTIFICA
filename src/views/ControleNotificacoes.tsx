@@ -7,6 +7,7 @@ import {
 import * as XLSX from 'xlsx';
 import { toast } from 'sonner';
 import { DataContext } from '../contexts/DataContext';
+import { useAuth } from '../contexts/AuthContext';
 import ConfirmModal from '../components/ui/ConfirmModal';
 import { NotificacaoData, NotificacaoAntigaData, BarragemSNISB } from '../types';
 import { MTMap } from '../components/dashboard/MTMap';
@@ -164,6 +165,7 @@ const ControleNotificacoes: React.FC<ControleNotificacoesProps> = ({
     deleteNotificacao,
     refreshData
   } = useContext(DataContext);
+  const { canEdit, canDelete } = useAuth();
   const [antigasNotificacoes, setAntigasNotificacoes] = useState<NotificacaoAntigaData[]>([]);
   const [snisbData, setSnisbData] = useState<BarragemSNISB[]>([]);
   const [aneelData, setAneelData] = useState<BarragemSNISB[]>([]);
@@ -189,8 +191,12 @@ const ControleNotificacoes: React.FC<ControleNotificacoesProps> = ({
   const [itemToDelete, setItemToDelete] = useState<any | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
 
-  const canUserModify = (item: any): boolean => {
-    return item.origem === 'Nova';
+  const canUserEdit = (item: any): boolean => {
+    return canEdit && item.origem === 'Nova';
+  };
+
+  const canUserDelete = (item: any): boolean => {
+    return canDelete && item.origem === 'Nova';
   };
 
   const handleView = (item: any) => {
@@ -202,8 +208,8 @@ const ControleNotificacoes: React.FC<ControleNotificacoesProps> = ({
   };
 
   const handleEdit = (item: any) => {
-    if (!canUserModify(item)) {
-      toast.warning('Apenas o próprio autor ou um administrador tem permissão para editar esta notificação.');
+    if (!canUserEdit(item)) {
+      toast.warning('Você não tem permissão para editar esta notificação.');
       return;
     }
     if (item.origem === 'Nova' && item.raw && onEditNotificacao) {
@@ -214,8 +220,8 @@ const ControleNotificacoes: React.FC<ControleNotificacoesProps> = ({
   };
 
   const handleDeleteClick = (item: any) => {
-    if (!canUserModify(item)) {
-      toast.warning('Apenas o próprio autor ou um administrador tem permissão para excluir esta notificação.');
+    if (!canUserDelete(item)) {
+      toast.warning('Apenas Administrador pode excluir esta notificação.');
       return;
     }
     if (item.origem !== 'Nova' || !item.id) {
@@ -1097,33 +1103,37 @@ const ControleNotificacoes: React.FC<ControleNotificacoesProps> = ({
                       <Eye size={14} />
                     </button>
                     
-                    <button
-                      type="button"
-                      onClick={() => handleEdit(n)}
-                      disabled={!canUserModify(n)}
-                      title={canUserModify(n) ? "Editar Notificação" : "Apenas o próprio autor ou Administrador pode editar"}
-                      className={`p-1.5 rounded-lg transition-colors border border-transparent ${
-                        canUserModify(n) 
-                          ? 'text-slate-400 hover:text-blue-600 hover:bg-blue-50 hover:border-blue-200' 
-                          : 'text-slate-300 opacity-40 cursor-not-allowed'
-                      }`}
-                    >
-                      <Edit size={14} />
-                    </button>
+                    {canEdit && (
+                      <button
+                        type="button"
+                        onClick={() => handleEdit(n)}
+                        disabled={!canUserEdit(n)}
+                        title={canUserEdit(n) ? "Editar Notificação" : "Registros históricos não podem ser editados"}
+                        className={`p-1.5 rounded-lg transition-colors border border-transparent ${
+                          canUserEdit(n) 
+                            ? 'text-slate-400 hover:text-blue-600 hover:bg-blue-50 hover:border-blue-200' 
+                            : 'text-slate-300 opacity-40 cursor-not-allowed'
+                        }`}
+                      >
+                        <Edit size={14} />
+                      </button>
+                    )}
                     
-                    <button
-                      type="button"
-                      onClick={() => handleDeleteClick(n)}
-                      disabled={!canUserModify(n)}
-                      title={canUserModify(n) ? "Excluir Notificação" : "Apenas o próprio autor ou Administrador pode excluir"}
-                      className={`p-1.5 rounded-lg transition-colors border border-transparent ${
-                        canUserModify(n) 
-                          ? 'text-slate-400 hover:text-rose-600 hover:bg-rose-50 hover:border-rose-200' 
-                          : 'text-slate-300 opacity-40 cursor-not-allowed'
-                      }`}
-                    >
-                      <Trash2 size={14} />
-                    </button>
+                    {canDelete && (
+                      <button
+                        type="button"
+                        onClick={() => handleDeleteClick(n)}
+                        disabled={!canUserDelete(n)}
+                        title={canUserDelete(n) ? "Excluir Notificação" : "Registros históricos não podem ser excluídos"}
+                        className={`p-1.5 rounded-lg transition-colors border border-transparent ${
+                          canUserDelete(n) 
+                            ? 'text-slate-400 hover:text-rose-600 hover:bg-rose-50 hover:border-rose-200' 
+                            : 'text-slate-300 opacity-40 cursor-not-allowed'
+                        }`}
+                      >
+                        <Trash2 size={14} />
+                      </button>
+                    )}
                   </div>
                 </div>
                 <span className={`px-2 py-0.5 rounded-full text-[9px] font-black uppercase tracking-widest border ${
@@ -1251,33 +1261,37 @@ const ControleNotificacoes: React.FC<ControleNotificacoesProps> = ({
                           <Eye size={15} />
                         </button>
                         
-                        <button
-                          type="button"
-                          onClick={() => handleEdit(n)}
-                          disabled={!canUserModify(n)}
-                          title={canUserModify(n) ? "Editar Notificação" : "Apenas o próprio autor ou Administrador pode editar"}
-                          className={`p-1.5 rounded-lg transition-colors border border-transparent ${
-                            canUserModify(n) 
-                              ? 'text-slate-400 hover:text-blue-600 hover:bg-blue-50 hover:border-blue-200' 
-                              : 'text-slate-300 opacity-40 cursor-not-allowed'
-                          }`}
-                        >
-                          <Edit size={15} />
-                        </button>
+                        {canEdit && (
+                          <button
+                            type="button"
+                            onClick={() => handleEdit(n)}
+                            disabled={!canUserEdit(n)}
+                            title={canUserEdit(n) ? "Editar Notificação" : "Registros históricos não podem ser editados"}
+                            className={`p-1.5 rounded-lg transition-colors border border-transparent ${
+                              canUserEdit(n) 
+                                ? 'text-slate-400 hover:text-blue-600 hover:bg-blue-50 hover:border-blue-200' 
+                                : 'text-slate-300 opacity-40 cursor-not-allowed'
+                            }`}
+                          >
+                            <Edit size={15} />
+                          </button>
+                        )}
                         
-                        <button
-                          type="button"
-                          onClick={() => handleDeleteClick(n)}
-                          disabled={!canUserModify(n)}
-                          title={canUserModify(n) ? "Excluir Notificação" : "Apenas o próprio autor ou Administrador pode excluir"}
-                          className={`p-1.5 rounded-lg transition-colors border border-transparent ${
-                            canUserModify(n) 
-                              ? 'text-slate-400 hover:text-rose-600 hover:bg-rose-50 hover:border-rose-200' 
-                              : 'text-slate-300 opacity-40 cursor-not-allowed'
-                          }`}
-                        >
-                          <Trash2 size={15} />
-                        </button>
+                        {canDelete && (
+                          <button
+                            type="button"
+                            onClick={() => handleDeleteClick(n)}
+                            disabled={!canUserDelete(n)}
+                            title={canUserDelete(n) ? "Excluir Notificação" : "Registros históricos não podem ser excluídos"}
+                            className={`p-1.5 rounded-lg transition-colors border border-transparent ${
+                              canUserDelete(n) 
+                                ? 'text-slate-400 hover:text-rose-600 hover:bg-rose-50 hover:border-rose-200' 
+                                : 'text-slate-300 opacity-40 cursor-not-allowed'
+                            }`}
+                          >
+                            <Trash2 size={15} />
+                          </button>
+                        )}
                       </div>
                     </div>
                   </td>

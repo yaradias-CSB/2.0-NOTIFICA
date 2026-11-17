@@ -4,6 +4,7 @@ import { generateParecerPDF, generateOficioPDF, generateNotificacaoPDF } from '.
 import { OPS_MUNICIPIOS, OPS_ANALISTA, OPS_RESPONSAVEL_TECNICO } from '../constants';
 import { RiscoEnum, DanoEnum, ParecerData, OficioData } from '../types';
 import { DataContext, AppDocument } from '../contexts/DataContext';
+import { useAuth } from '../contexts/AuthContext';
 import { logActivity } from '../lib/audit';
 import * as XLSX from 'xlsx';
 
@@ -111,6 +112,7 @@ interface ParecerListProps {
 
 const ParecerList: React.FC<ParecerListProps> = ({ onEditParecer, onViewParecer }) => {
   const { documents: pareceres, loading, refreshData, deleteParecer, deleteOficio, deleteNotificacao, deleteFiscalizacao } = useContext(DataContext);
+  const { canEdit, canDelete } = useAuth();
   const [filters, setFilters] = useState({
     municipios: [] as string[],
     dpa: [] as string[],
@@ -547,6 +549,10 @@ const ParecerList: React.FC<ParecerListProps> = ({ onEditParecer, onViewParecer 
   }, [totalPages, currentPage]);
 
   const handleEdit = (item: AppDocument) => {
+    if (!canEdit) {
+      onViewParecer?.(item as any);
+      return;
+    }
     if (item.status === 'Concluído') {
       if (window.confirm(`Este ${item.tipo_documento.toLowerCase()} já está concluído. Deseja realmente alterá-lo?`)) {
         onEditParecer?.(item as any);
@@ -579,6 +585,7 @@ const ParecerList: React.FC<ParecerListProps> = ({ onEditParecer, onViewParecer 
   };
 
   const handleDelete = async (id: string, item: AppDocument) => {
+    if (!canDelete) return;
     if (window.confirm(`Tem certeza que deseja excluir este ${item.tipo_documento.toLowerCase()}?`)) {
       let result;
       if (item.tipo_documento.startsWith('Parecer Técnico')) {
@@ -766,9 +773,13 @@ const ParecerList: React.FC<ParecerListProps> = ({ onEditParecer, onViewParecer 
                     </div>
                     <div className="flex items-center gap-1 sm:gap-1.5 shrink-0">
                       <button onClick={() => onViewParecer?.(item)} className="p-2 sm:p-2.5 text-slate-500 hover:text-emerald-600 bg-slate-100 hover:bg-emerald-50 rounded-xl transition-colors active:scale-95 touch-manipulation" title="Visualizar"><Eye size={15} /></button>
-                      <button onClick={() => handleEdit(item)} className="p-2 sm:p-2.5 text-slate-500 hover:text-blue-600 bg-slate-100 hover:bg-blue-50 rounded-xl transition-colors active:scale-95 touch-manipulation" title="Editar"><Edit size={15} /></button>
+                      {canEdit && (
+                        <button onClick={() => handleEdit(item)} className="p-2 sm:p-2.5 text-slate-500 hover:text-blue-600 bg-slate-100 hover:bg-blue-50 rounded-xl transition-colors active:scale-95 touch-manipulation" title="Editar"><Edit size={15} /></button>
+                      )}
                       <button onClick={() => handleExportPDF(item)} className="p-2 sm:p-2.5 text-slate-500 hover:text-rose-600 bg-slate-100 hover:bg-rose-50 rounded-xl transition-colors active:scale-95 touch-manipulation" title="Exportar PDF"><FileDown size={15} /></button>
-                      <button onClick={() => item.id && handleDelete(item.id, item)} className="p-2 sm:p-2.5 text-slate-500 hover:text-red-600 bg-slate-100 hover:bg-red-50 rounded-xl transition-colors active:scale-95 touch-manipulation" title="Excluir"><Trash2 size={15} /></button>
+                      {canDelete && (
+                        <button onClick={() => item.id && handleDelete(item.id, item)} className="p-2 sm:p-2.5 text-slate-500 hover:text-red-600 bg-slate-100 hover:bg-red-50 rounded-xl transition-colors active:scale-95 touch-manipulation" title="Excluir"><Trash2 size={15} /></button>
+                      )}
                     </div>
                   </div>
                   <div>
@@ -909,9 +920,13 @@ const ParecerList: React.FC<ParecerListProps> = ({ onEditParecer, onViewParecer 
                             <td className="px-6 py-4 text-right">
                                 <div className="flex justify-end gap-2">
                                     <button onClick={() => onViewParecer?.(item as any)} className="p-2 text-slate-400 hover:text-emerald-600" title="Visualizar"><Eye size={16} /></button>
-                                    <button onClick={() => handleEdit(item)} className="p-2 text-slate-400 hover:text-blue-600" title="Editar"><Edit size={16} /></button>
+                                    {canEdit && (
+                                      <button onClick={() => handleEdit(item)} className="p-2 text-slate-400 hover:text-blue-600" title="Editar"><Edit size={16} /></button>
+                                    )}
                                     <button onClick={() => handleExportPDF(item)} className="p-2 text-slate-400 hover:text-rose-600" title="Exportar PDF"><FileDown size={16} /></button>
-                                    <button onClick={() => item.id && handleDelete(item.id, item)} className="p-2 text-slate-400 hover:text-red-600" title="Excluir"><Trash2 size={16} /></button>
+                                    {canDelete && (
+                                      <button onClick={() => item.id && handleDelete(item.id, item)} className="p-2 text-slate-400 hover:text-red-600" title="Excluir"><Trash2 size={16} /></button>
+                                    )}
                                 </div>
                             </td>
                         </tr>

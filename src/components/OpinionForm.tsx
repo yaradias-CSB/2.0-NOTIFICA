@@ -31,6 +31,7 @@ import { AdministraEntityPicker } from './ecosystem/AdministraEntityPicker';
 import { CarCoordinateLookup } from './ecosystem/CarCoordinateLookup';
 import { matchMunicipioMT } from '../services/carLookupService';
 import { sanitizeObject } from '../lib/security';
+import { getActiveAuthUser } from '../lib/supabase';
 
 interface OpinionFormProps {
   onBack: () => void;
@@ -494,7 +495,12 @@ const CHECKLISTS: { [key: string]: string[] } = {
       portariaClassificacao: sanitized.portariaClassificacao,
       parecerClassificacao: sanitized.parecerClassificacao,
       responsaveisTecnicos: rtList,
-      analista: sanitized.analistas?.[0] || sanitized.analistasOutros?.[0] || 'Sistema Local',
+      analista:
+        sanitized.analistas?.[0] ||
+        sanitized.analistasOutros?.[0] ||
+        getActiveAuthUser()?.name ||
+        getActiveAuthUser()?.email ||
+        '',
     });
   };
 
@@ -624,7 +630,9 @@ const CHECKLISTS: { [key: string]: string[] } = {
             matched?.createdByAnalyst ||
             sanitized.analistas?.[0] ||
             sanitized.analistasOutros?.[0] ||
-            'Sistema Local',
+            getActiveAuthUser()?.name ||
+            getActiveAuthUser()?.email ||
+            '',
         },
         matched ? { allowEditFromForm: true } : undefined
       );
@@ -709,7 +717,9 @@ const CHECKLISTS: { [key: string]: string[] } = {
             matched?.createdByAnalyst ||
             sanitized.analistas?.[0] ||
             sanitized.analistasOutros?.[0] ||
-            'Sistema Local',
+            getActiveAuthUser()?.name ||
+            getActiveAuthUser()?.email ||
+            '',
         },
         matched ? { allowEditFromForm: true } : undefined
       );
@@ -784,7 +794,11 @@ const CHECKLISTS: { [key: string]: string[] } = {
             cpf: cpfValue,
             sourceSystem: CURRENT_SYSTEM_ID,
             createdByAnalyst:
-              sanitized.analistas?.[0] || sanitized.analistasOutros?.[0] || 'Sistema Local',
+              sanitized.analistas?.[0] ||
+              sanitized.analistasOutros?.[0] ||
+              getActiveAuthUser()?.name ||
+              getActiveAuthUser()?.email ||
+              '',
           });
           if (!rtRes.success || !rtRes.data) {
             throw new Error(rtRes.message || `Erro ao cadastrar RT ${nome}.`);
@@ -861,7 +875,12 @@ const CHECKLISTS: { [key: string]: string[] } = {
         barragemId: resolvedBarragemId,
         responsavelTecnicoIds: resolvedRtIds,
         sourceSystem: sanitizedFormData.sourceSystem || CURRENT_SYSTEM_ID,
-        analista: formData.analistas?.[0] || formData.analistasOutros?.[0] || 'Sistema Local',
+        analista:
+          formData.analistas?.[0] ||
+          formData.analistasOutros?.[0] ||
+          getActiveAuthUser()?.name ||
+          getActiveAuthUser()?.email ||
+          '',
         status: status,
         dataParecer: resolvedDataParecer,
         tipo_documento: formData.tipo_documento
@@ -2382,7 +2401,7 @@ const CHECKLISTS: { [key: string]: string[] } = {
                   <span className="font-bold text-slate-700">Sim, lavrar Ofício de Pendências</span>
                 </label>
 
-                {formData.temOficioPendencia && (
+                {!readOnly && formData.temOficioPendencia && (
                   <div className="space-y-4 animate-in zoom-in-95 duration-300">
                     <button 
                       type="button"
@@ -2697,18 +2716,22 @@ const CHECKLISTS: { [key: string]: string[] } = {
                 </div>
                 
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 w-full max-w-lg">
-                   <button 
-                    onClick={() => handleSave('Concluído')} 
-                    className="py-4 bg-emerald-600 text-white rounded-2xl font-black uppercase tracking-widest text-xs hover:bg-emerald-700 transition-all shadow-xl shadow-emerald-600/20"
-                  >
-                    Concluir e Finalizar
-                  </button>
-                  <button 
-                    onClick={() => handleSave('Rascunho')}
-                    className="py-4 bg-white border border-slate-200 text-slate-700 rounded-2xl font-black uppercase tracking-widest text-xs hover:bg-slate-50 transition-all"
-                  >
-                    Salvar Rascunho
-                  </button>
+                  {!readOnly && (
+                    <>
+                      <button 
+                        onClick={() => handleSave('Concluído')} 
+                        className="py-4 bg-emerald-600 text-white rounded-2xl font-black uppercase tracking-widest text-xs hover:bg-emerald-700 transition-all shadow-xl shadow-emerald-600/20"
+                      >
+                        Concluir e Finalizar
+                      </button>
+                      <button 
+                        onClick={() => handleSave('Rascunho')}
+                        className="py-4 bg-white border border-slate-200 text-slate-700 rounded-2xl font-black uppercase tracking-widest text-xs hover:bg-slate-50 transition-all"
+                      >
+                        Salvar Rascunho
+                      </button>
+                    </>
+                  )}
                   <button 
                     onClick={handleDownloadPDF}
                     className="py-4 bg-rose-600 text-white rounded-2xl font-black uppercase tracking-widest text-xs hover:bg-rose-700 transition-all shadow-xl shadow-rose-600/20 flex items-center justify-center gap-2"

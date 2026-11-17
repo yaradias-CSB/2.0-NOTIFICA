@@ -18,6 +18,7 @@ import {
   sanitizeObject,
   stripSensitiveFields,
 } from '../lib/security';
+import { authFetch } from '../lib/supabase';
 
 const ECOSYSTEM_STORAGE_KEYS = {
   CHANGE_REQUESTS: 'notifica_csb_change_requests',
@@ -259,7 +260,7 @@ export class LocalEcosystemRepository implements EcosystemFederationRepository {
 
     try {
       const query = system ? `?system=${encodeURIComponent(system)}` : '';
-      const response = await fetch(`/api/ecosystem/integrated-data${query}`);
+      const response = await authFetch(`/api/ecosystem/integrated-data${query}`);
       if (!response.ok) return cached;
 
       const data = (await response.json()) as Partial<IntegratedSystemsDataPayload>;
