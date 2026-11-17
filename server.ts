@@ -1,6 +1,4 @@
 import express from "express";
-import { createServer as createViteServer } from "vite";
-import path from "path";
 import dotenv from "dotenv";
 
 dotenv.config();
@@ -54,6 +52,7 @@ function getNotificaAuthBaseUrl(notificaCfg: RemoteServiceConfig | null): string
   const raw =
     process.env.NOTIFICA_SUPABASE_URL?.trim() ||
     notificaCfg?.endpoint ||
+    process.env.VITE_SUPABASE_URL?.trim() ||
     "";
   return raw.replace(/\/rest\/v1\/?$/i, "").replace(/\/+$/, "");
 }
@@ -721,6 +720,11 @@ app.get("/api/health", (_req, res) => {
 });
 
 async function requireAuth(req: express.Request, res: express.Response, next: express.NextFunction) {
+  const cleanPath = (req.originalUrl || req.url || "").split("?")[0].replace(/\/+$/, "");
+  if (cleanPath === "/api/health" || req.path === "/health") {
+    return next();
+  }
+
   const authHeader = String(req.headers.authorization || "");
   if (!authHeader.startsWith("Bearer ")) {
     return res.status(401).json({ error: "Token de autenticação ausente." });
@@ -1810,25 +1814,23 @@ app.delete("/api/documents/:kind/:id", requireRole(["Administrador"]), async (re
   });
 });
 
-// Vite middleware for development
-async function startServer() {
-  if (process.env.NODE_ENV !== "production") {
-    const vite = await createViteServer({
-      server: { middlewareMode: true },
-      appType: "spa",
-    });
-    app.use(vite.middlewares);
-  } else {
-    const distPath = path.join(process.cwd(), "dist");
-    app.use(express.static(distPath));
-    app.get("*", (_req, res) => {
-      res.sendFile(path.join(distPath, "index.html"));
-    });
-  }
+const isProduction = process.env.NODE_ENV === "production" || Boolean(process.env.VERCEL);
+
+async function startDevServer() {
+  const { createServer: createViteServer } = await import("vite");
+  const vite = await createViteServer({
+    server: { middlewareMode: true },
+    appType: "spa",
+  });
+  app.use(vite.middlewares);
 
   app.listen(PORT, "0.0.0.0", () => {
     console.log(`Server running on http://localhost:${PORT}`);
   });
 }
 
-startServer();
+if (!isProduction) {
+  void startDevServer();
+}
+
+export default app;
