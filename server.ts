@@ -1816,6 +1816,7 @@ app.post("/api/registry/rts/link-art", requireRole(["Administrador", "Analista"]
     processo: body.processo || undefined,
     situacao: "ativo",
     observacoes: obsParts.join(" | ") || undefined,
+    created_by_analyst: authorName,
     created_at: now,
   });
 
