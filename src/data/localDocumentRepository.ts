@@ -685,9 +685,9 @@ async function fetchRemoteCollection<T extends { id?: string }>(
 async function syncRemoteDocument(
   kind: 'pareceres' | 'oficios' | 'notificacoes',
   flatDoc: Record<string, any>
-): Promise<void> {
+): Promise<Record<string, any>> {
   if (typeof window === 'undefined' || (typeof navigator !== 'undefined' && !navigator.onLine)) {
-    return;
+    return flatDoc;
   }
   const res = await authFetch(`/api/documents/${kind}`, {
     method: 'POST',
@@ -697,6 +697,11 @@ async function syncRemoteDocument(
   if (!res.ok) {
     throw new Error(await parseDocErrorMessage(res, `Falha ao sincronizar documento remoto (HTTP ${res.status}).`));
   }
+  const data = await res.json();
+  if (data?.synced && data?.item) {
+    return data.item as Record<string, any>;
+  }
+  return flatDoc;
 }
 
 async function deleteRemoteDocument(
@@ -759,13 +764,13 @@ export class LocalDocumentRepository implements DocumentRepository {
     const existing = current.find((item) => item.id === id);
     const createdAt = existing?.created_at || cleanData.created_at || now;
 
-    // Persist lean flat row remotely first, then locally
+    // Persist lean flat row remotely first, then locally using server-authoritative row
     const flatRow = serializeParecerFlat(cleanData, id, now, createdAt);
-    await syncRemoteDocument('pareceres', flatRow);
-    const updated = [flatRow, ...current.filter((item) => item.id !== id)];
+    const syncedRow = await syncRemoteDocument('pareceres', flatRow);
+    const updated = [syncedRow, ...current.filter((item) => item.id !== id)];
     writeCollection(STORAGE_KEYS.PARECERES, updated);
 
-    return hydrateParecerRow(flatRow);
+    return hydrateParecerRow(syncedRow);
   }
 
   async deleteParecer(id: string): Promise<void> {
@@ -805,11 +810,11 @@ export class LocalDocumentRepository implements DocumentRepository {
     const createdAt = existing?.created_at || cleanData.created_at || now;
 
     const flatRow = serializeOficioFlat(cleanData, id, now, createdAt);
-    await syncRemoteDocument('oficios', flatRow);
-    const updated = [flatRow, ...current.filter((item) => item.id !== id)];
+    const syncedRow = await syncRemoteDocument('oficios', flatRow);
+    const updated = [syncedRow, ...current.filter((item) => item.id !== id)];
     writeCollection(STORAGE_KEYS.OFICIOS, updated);
 
-    return hydrateOficioRow(flatRow);
+    return hydrateOficioRow(syncedRow);
   }
 
   async deleteOficio(id: string): Promise<void> {
@@ -849,11 +854,11 @@ export class LocalDocumentRepository implements DocumentRepository {
     const createdAt = existing?.created_at || cleanData.created_at || now;
 
     const flatRow = serializeNotificacaoFlat(cleanData, id, now, createdAt);
-    await syncRemoteDocument('notificacoes', flatRow);
-    const updated = [flatRow, ...current.filter((item) => item.id !== id)];
+    const syncedRow = await syncRemoteDocument('notificacoes', flatRow);
+    const updated = [syncedRow, ...current.filter((item) => item.id !== id)];
     writeCollection(STORAGE_KEYS.NOTIFICACOES, updated);
 
-    return hydrateNotificacaoRow(flatRow);
+    return hydrateNotificacaoRow(syncedRow);
   }
 
   async deleteNotificacao(id: string): Promise<void> {

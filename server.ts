@@ -109,6 +109,91 @@ function maskRtItem<T extends ReturnType<typeof mapRemoteRT>>(item: T): T {
   };
 }
 
+const DOCUMENT_CPF_CNPJ_FIELDS = new Set([
+  "cpf_cnpj",
+  "cpfCnpj",
+  "documento_identificacao",
+  "documentoIdentificacao",
+  "empreendedor_cpf_cnpj",
+  "empreendedorCpfCnpj",
+  "cpf",
+  "cnpj",
+  "cpf_rt",
+  "cpfRt",
+  "cpfRT",
+  "documento",
+  "documento_novo",
+]);
+
+const DOCUMENT_NORMALIZED_CPF_CNPJ_FIELDS = new Set([
+  "cpf_cnpj_normalizado",
+  "cpfCnpjNormalizado",
+]);
+
+function maskEmbeddedCpfCnpjInText(text: string): string {
+  return text
+    .replace(/\b\d{3}\.\d{3}\.\d{3}-(\d{2})\b/g, "***.***.***-$1")
+    .replace(/\b\d{2}\.\d{3}\.\d{3}\/\d{4}-(\d{2})\b/g, "**.***.***/****-$1");
+}
+
+function maskDocumentRow<T extends Record<string, any>>(row: T): T {
+  if (!row || typeof row !== "object") return row;
+  const masked: Record<string, any> = { ...row };
+  for (const [key, val] of Object.entries(masked)) {
+    if (val === null || val === undefined) continue;
+    if (DOCUMENT_NORMALIZED_CPF_CNPJ_FIELDS.has(key)) {
+      masked[key] = "";
+      continue;
+    }
+    const isDocField =
+      DOCUMENT_CPF_CNPJ_FIELDS.has(key) ||
+      (/cpf|cnpj/i.test(key) && !/tipo/i.test(key));
+    if (isDocField) {
+      if (typeof val === "string") {
+        masked[key] = val.trim() ? maskCpfCnpjValue(val) || "***" : val;
+      } else if (typeof val === "number") {
+        masked[key] = maskCpfCnpjValue(String(val)) || "***";
+      }
+      continue;
+    }
+    if (typeof val === "string" && val.length >= 14) {
+      masked[key] = maskEmbeddedCpfCnpjInText(val);
+    }
+  }
+  return masked as T;
+}
+
+function getSessionIdentity(req: express.Request): AuthenticatedUser | null {
+  return (req as AuthenticatedRequest).authUser || null;
+}
+
+function getAuthorDisplayName(authUser: AuthenticatedUser): string {
+  return (authUser.nome || authUser.email || "").trim();
+}
+
+const CLIENT_IDENTITY_KEYS = new Set([
+  "user_id",
+  "userId",
+  "analista",
+  "created_by_analyst",
+  "createdByAnalyst",
+  "created_by",
+  "createdBy",
+  "updated_by",
+  "updatedBy",
+  "author",
+  "autor",
+]);
+
+function stripClientIdentityFields(raw: Record<string, any>): Record<string, any> {
+  const cleaned: Record<string, any> = {};
+  for (const [key, val] of Object.entries(raw || {})) {
+    if (CLIENT_IDENTITY_KEYS.has(key)) continue;
+    cleaned[key] = val;
+  }
+  return cleaned;
+}
+
 function getServiceConfig(prefix: "CENTRAL" | "NOTIFICA" | "CLASSIFICA" | "FISCALIZA"): RemoteServiceConfig | null {
   const candidates: Array<[string | undefined, string | undefined]> =
     prefix === "CENTRAL"
@@ -1339,6 +1424,15 @@ function formatGmsString(part: { g?: string; m?: string; s?: string } | undefine
 }
 
 app.post("/api/registry/empreendedores", requireRole(["Administrador", "Analista"]), async (req, res) => {
+  const authUser = getSessionIdentity(req);
+  if (!authUser) {
+    return res.status(401).json({
+      remoteEnabled: false,
+      synced: false,
+      error: "Usuário não autenticado.",
+    });
+  }
+
   const cfg = getServiceConfig("CENTRAL");
   if (!cfg) {
     return res.status(503).json({
@@ -1351,6 +1445,7 @@ app.post("/api/registry/empreendedores", requireRole(["Administrador", "Analista
   const body = req.body || {};
   const now = new Date().toISOString();
   const cpfDigits = normalizeDigits(body.cpfCnpjNormalizado || body.cpfCnpj);
+  const authorName = getAuthorDisplayName(authUser);
   const payload = sanitizeFlatRow({
     id: body.id,
     nome: body.nome,
@@ -1371,7 +1466,7 @@ app.post("/api/registry/empreendedores", requireRole(["Administrador", "Analista
     car_mt: body.carMt,
     situacao: "ativo",
     source_system: body.sourceSystem || "NOTIFICA",
-    created_by_analyst: body.createdByAnalyst,
+    created_by_analyst: authorName,
     created_at: body.createdAt || now,
     updated_at: now,
   });
@@ -1393,6 +1488,15 @@ app.post("/api/registry/empreendedores", requireRole(["Administrador", "Analista
 });
 
 app.post("/api/registry/barragens", requireRole(["Administrador", "Analista"]), async (req, res) => {
+  const authUser = getSessionIdentity(req);
+  if (!authUser) {
+    return res.status(401).json({
+      remoteEnabled: false,
+      synced: false,
+      error: "Usuário não autenticado.",
+    });
+  }
+
   const cfg = getServiceConfig("CENTRAL");
   if (!cfg) {
     return res.status(503).json({
@@ -1404,6 +1508,7 @@ app.post("/api/registry/barragens", requireRole(["Administrador", "Analista"]), 
 
   const body = req.body || {};
   const now = new Date().toISOString();
+  const authorName = getAuthorDisplayName(authUser);
   const latDec = gmsPartToDecimal(body.coordenadasGMS?.lat, true);
   const lngDec = gmsPartToDecimal(body.coordenadasGMS?.long, true);
   const latGms = formatGmsString(body.coordenadasGMS?.lat);
@@ -1446,7 +1551,7 @@ app.post("/api/registry/barragens", requireRole(["Administrador", "Analista"]), 
     portaria_classificacao: body.portariaClassificacao,
     parecer_classificacao: body.parecerClassificacao,
     source_system: body.sourceSystem || "NOTIFICA",
-    created_by_analyst: body.createdByAnalyst,
+    created_by_analyst: authorName,
     created_at: body.createdAt || now,
     updated_at: now,
   });
@@ -1468,6 +1573,15 @@ app.post("/api/registry/barragens", requireRole(["Administrador", "Analista"]), 
 });
 
 app.post("/api/registry/rts", requireRole(["Administrador", "Analista"]), async (req, res) => {
+  const authUser = getSessionIdentity(req);
+  if (!authUser) {
+    return res.status(401).json({
+      remoteEnabled: false,
+      synced: false,
+      error: "Usuário não autenticado.",
+    });
+  }
+
   const cfg = getServiceConfig("CENTRAL");
   if (!cfg) {
     return res.status(503).json({
@@ -1479,6 +1593,7 @@ app.post("/api/registry/rts", requireRole(["Administrador", "Analista"]), async 
 
   const body = req.body || {};
   const now = new Date().toISOString();
+  const authorName = getAuthorDisplayName(authUser);
   const payload = sanitizeFlatRow({
     id: body.id,
     nome: body.nome,
@@ -1493,7 +1608,7 @@ app.post("/api/registry/rts", requireRole(["Administrador", "Analista"]), async 
     email: body.email,
     situacao: "ativo",
     source_system: body.sourceSystem || "NOTIFICA",
-    created_by_analyst: body.createdByAnalyst,
+    created_by_analyst: authorName,
     created_at: body.createdAt || now,
     updated_at: now,
   });
@@ -1509,6 +1624,7 @@ app.post("/api/registry/rts", requireRole(["Administrador", "Analista"]), async 
       telefone: body.telefone,
       email: body.email,
       source_system: body.sourceSystem || "NOTIFICA",
+      created_by_analyst: authorName,
       created_at: body.createdAt || now,
       updated_at: now,
     });
@@ -1531,6 +1647,11 @@ app.post("/api/registry/rts", requireRole(["Administrador", "Analista"]), async 
 });
 
 app.post("/api/registry/rts/link-art", requireRole(["Administrador", "Analista"]), async (req, res) => {
+  const authUser = getSessionIdentity(req);
+  if (!authUser) {
+    return res.status(401).json({ remoteEnabled: false, synced: false, error: "Usuário não autenticado." });
+  }
+
   const cfg = getServiceConfig("CENTRAL");
   const body = req.body || {};
   const art = String(body.art || "").trim();
@@ -1548,6 +1669,7 @@ app.post("/api/registry/rts/link-art", requireRole(["Administrador", "Analista"]
   }
 
   const now = new Date().toISOString();
+  const authorName = getAuthorDisplayName(authUser);
   const rtId = String(body.rtId || `rt_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`);
 
   const rtPayload = sanitizeFlatRow({
@@ -1559,6 +1681,7 @@ app.post("/api/registry/rts/link-art", requireRole(["Administrador", "Analista"]
     art,
     art_rrt: art,
     barragem_vinculada: body.barragemNome || body.empreendedorNome || undefined,
+    created_by_analyst: authorName,
     updated_at: now,
   });
 
@@ -1601,6 +1724,7 @@ app.post("/api/registry/rts/link-art", requireRole(["Administrador", "Analista"]
           cpf: body.cpf,
           art,
           art_rrt: art,
+          created_by_analyst: authorName,
         },
         "ADMINISTRA"
       );
@@ -1749,9 +1873,12 @@ app.get("/api/documents/:kind", async (req, res) => {
     return res.json({ remoteEnabled: false, items: [] });
   }
   const result = await remoteRestRequest<any[]>(cfg, kind, { query: "select=*&limit=2000" });
+  const rawItems = Array.isArray(result.data) ? result.data : [];
+  const includeFullDoc = canViewFullDocument(req);
+  const items = includeFullDoc ? rawItems : rawItems.map((row) => maskDocumentRow(row));
   return res.json({
     remoteEnabled: result.ok,
-    items: Array.isArray(result.data) ? result.data : [],
+    items,
   });
 });
 
@@ -1759,6 +1886,14 @@ app.post("/api/documents/:kind", requireRole(["Administrador", "Analista"]), asy
   const kind = req.params.kind;
   if (!ALLOWED_DOC_KINDS.has(kind)) {
     return res.status(400).json({ remoteEnabled: false, synced: false, error: "Tipo de documento inválido." });
+  }
+  const authUser = getSessionIdentity(req);
+  if (!authUser) {
+    return res.status(401).json({
+      remoteEnabled: false,
+      synced: false,
+      error: "Usuário não autenticado.",
+    });
   }
   const cfg = getServiceConfig("NOTIFICA");
   if (!cfg) {
@@ -1768,7 +1903,10 @@ app.post("/api/documents/:kind", requireRole(["Administrador", "Analista"]), asy
       error: "Persistência remota do Notifica não configurada no servidor.",
     });
   }
-  const flatBody = sanitizeFlatRow(req.body || {});
+  const flatBody = sanitizeFlatRow(stripClientIdentityFields(req.body || {}));
+  flatBody.user_id = authUser.id ? authUser.id : null;
+  flatBody.analista = getAuthorDisplayName(authUser);
+
   const result = await upsertDocumentWithColumnFallback(cfg, kind, flatBody);
   if (!result.ok) {
     return res.status(502).json({
