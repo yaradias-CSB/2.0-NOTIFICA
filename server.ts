@@ -106,6 +106,9 @@ function maskRtItem<T extends ReturnType<typeof mapRemoteRT>>(item: T): T {
   return {
     ...item,
     cpf: item.cpf ? maskCpfCnpjValue(item.cpf) : undefined,
+    artsVinculadas: Array.isArray(item.artsVinculadas)
+      ? item.artsVinculadas.map((artItem) => maskDocumentRow(artItem))
+      : item.artsVinculadas,
   };
 }
 
@@ -128,39 +131,137 @@ const DOCUMENT_CPF_CNPJ_FIELDS = new Set([
 const DOCUMENT_NORMALIZED_CPF_CNPJ_FIELDS = new Set([
   "cpf_cnpj_normalizado",
   "cpfCnpjNormalizado",
+  "cpf_normalizado",
+  "cpfNormalizado",
+  "cnpj_normalizado",
+  "cnpjNormalizado",
+]);
+
+const NON_DOC_TEXT_FIELDS = new Set([
+  "id",
+  "user_id",
+  "userId",
+  "empreendedor_id",
+  "empreendedorId",
+  "barragem_id",
+  "barragemId",
+  "barragem_ids",
+  "barragemIds",
+  "responsavel_tecnico_ids",
+  "responsavelTecnicoIds",
+  "oficio_id",
+  "oficioId",
+  "rt_id",
+  "rtId",
+  "telefone",
+  "telefone_rt",
+  "celular",
+  "whatsapp",
+  "fone",
+  "cep",
+  "cep_correspondencia",
+  "cepCorrespondencia",
+  "art",
+  "art_rrt",
+  "art_numero",
+  "artCreaMt",
+  "numArt",
+  "car_mt",
+  "carMt",
+  "numCarMt",
+  "codigo_car",
+  "codigoCar",
+  "codigo_snisb",
+  "codigoSnisb",
+  "snisb",
+  "processo",
+  "num_processo",
+  "numProcesso",
+  "processo_referencia",
+  "processoReferencia",
+  "protocolo",
+  "num_protocolo_analisado",
+  "numProtocoloAnalisado",
+  "num_parecer_tecnico",
+  "numParecerTecnico",
+  "notificacao_gerada",
+  "notificacaoGerada",
+  "oficio_gerado",
+  "oficioGerado",
+  "created_at",
+  "updated_at",
+  "createdAt",
+  "updatedAt",
 ]);
 
 function maskEmbeddedCpfCnpjInText(text: string): string {
   return text
-    .replace(/\b\d{3}\.\d{3}\.\d{3}-(\d{2})\b/g, "***.***.***-$1")
-    .replace(/\b\d{2}\.\d{3}\.\d{3}\/\d{4}-(\d{2})\b/g, "**.***.***/****-$1");
+    .replace(/(?<![A-Za-z0-9])\d{2}\.\d{3}\.\d{3}\/\d{4}-(\d{2})(?![A-Za-z0-9])/g, "**.***.***/****-$1")
+    .replace(/(?<![A-Za-z0-9])\d{8}\/\d{4}-(\d{2})(?![A-Za-z0-9])/g, "**.***.***/****-$1")
+    .replace(/(?<![A-Za-z0-9])\d{3}\.\d{3}\.\d{3}-(\d{2})(?![A-Za-z0-9])/g, "***.***.***-$1")
+    .replace(/(?<![A-Za-z0-9])\d{9}-(\d{2})(?![A-Za-z0-9])/g, "***.***.***-$1")
+    .replace(/(?<![A-Za-z0-9])\d{12}(\d{2})(?![A-Za-z0-9])/g, "**.***.***/****-$1")
+    .replace(/(?<![A-Za-z0-9])\d{9}(\d{2})(?![A-Za-z0-9])/g, "***.***.***-$1");
 }
 
-function maskDocumentRow<T extends Record<string, any>>(row: T): T {
-  if (!row || typeof row !== "object") return row;
-  const masked: Record<string, any> = { ...row };
-  for (const [key, val] of Object.entries(masked)) {
-    if (val === null || val === undefined) continue;
-    if (DOCUMENT_NORMALIZED_CPF_CNPJ_FIELDS.has(key)) {
-      masked[key] = "";
-      continue;
-    }
-    const isDocField =
-      DOCUMENT_CPF_CNPJ_FIELDS.has(key) ||
-      (/cpf|cnpj/i.test(key) && !/tipo/i.test(key));
-    if (isDocField) {
-      if (typeof val === "string") {
-        masked[key] = val.trim() ? maskCpfCnpjValue(val) || "***" : val;
-      } else if (typeof val === "number") {
-        masked[key] = maskCpfCnpjValue(String(val)) || "***";
-      }
-      continue;
-    }
-    if (typeof val === "string" && val.length >= 14) {
-      masked[key] = maskEmbeddedCpfCnpjInText(val);
-    }
+function isNormalizedDocFieldKey(key: string): boolean {
+  return (
+    DOCUMENT_NORMALIZED_CPF_CNPJ_FIELDS.has(key) ||
+    (/normaliz/i.test(key) && /cpf|cnpj|doc/i.test(key))
+  );
+}
+
+function isDocFieldKey(key: string): boolean {
+  return (
+    DOCUMENT_CPF_CNPJ_FIELDS.has(key) ||
+    (/cpf|cnpj/i.test(key) && !/tipo/i.test(key))
+  );
+}
+
+function maskDocumentValue(value: unknown, keyHint = ""): any {
+  if (value === null || value === undefined) return value;
+
+  if (Array.isArray(value)) {
+    return value.map((item) => maskDocumentValue(item, keyHint));
   }
-  return masked as T;
+
+  if (typeof value === "object") {
+    const maskedObj: Record<string, any> = {};
+    for (const [k, v] of Object.entries(value)) {
+      maskedObj[k] = maskDocumentValue(v, k);
+    }
+    return maskedObj;
+  }
+
+  if (keyHint && isNormalizedDocFieldKey(keyHint)) {
+    return "";
+  }
+
+  if (keyHint && isDocFieldKey(keyHint)) {
+    if (typeof value === "string") {
+      return value.trim() ? maskCpfCnpjValue(value) || "***" : value;
+    }
+    if (typeof value === "number") {
+      return maskCpfCnpjValue(String(value)) || "***";
+    }
+    return value;
+  }
+
+  if (
+    typeof value === "string" &&
+    !NON_DOC_TEXT_FIELDS.has(keyHint) &&
+    !/^tipo_/i.test(keyHint) &&
+    value.length >= 11
+  ) {
+    return maskEmbeddedCpfCnpjInText(value);
+  }
+
+  return value;
+}
+
+function maskDocumentRow<T>(row: T): T {
+  if (!row || typeof row !== "object") return row;
+  return maskDocumentValue(row) as T;
 }
 
 function getSessionIdentity(req: express.Request): AuthenticatedUser | null {
@@ -174,7 +275,12 @@ function getAuthorDisplayName(authUser: AuthenticatedUser): string {
 const CLIENT_IDENTITY_KEYS = new Set([
   "user_id",
   "userId",
+  "usuario_id",
+  "usuarioId",
   "analista",
+  "analista_id",
+  "analistaId",
+  "analyst",
   "created_by_analyst",
   "createdByAnalyst",
   "created_by",
@@ -182,7 +288,13 @@ const CLIENT_IDENTITY_KEYS = new Set([
   "updated_by",
   "updatedBy",
   "author",
+  "author_id",
+  "authorId",
   "autor",
+  "autor_id",
+  "autorId",
+  "owner_id",
+  "ownerId",
 ]);
 
 function stripClientIdentityFields(raw: Record<string, any>): Record<string, any> {
