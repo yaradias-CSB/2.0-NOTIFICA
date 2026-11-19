@@ -50,6 +50,7 @@ import NotificaForm from './components/NotificaForm';
 import ParecerList from './components/ParecerList';
 import ControleNotificacoes from './views/ControleNotificacoes';
 import { EcossistemaAdministra } from './views/EcossistemaAdministra';
+import { PendenciasView } from './views/PendenciasView';
 import GlobalSearchBar from './components/GlobalSearchBar';
 import { DataContext } from './contexts/DataContext';
 import { EcosystemContext } from './contexts/EcosystemContext';
@@ -62,7 +63,7 @@ import { AppDocument } from './contexts/DataContext';
 
 // Main App Component
 const App: React.FC = () => {
-  const [currentView, setCurrentView] = useState<'dashboard' | 'list' | 'form' | 'oficio' | 'info' | 'users' | 'notificacao' | 'controle_notificacoes' | 'audit' | 'ecossistema'>('dashboard');
+  const [currentView, setCurrentView] = useState<'dashboard' | 'list' | 'form' | 'oficio' | 'info' | 'users' | 'notificacao' | 'controle_notificacoes' | 'audit' | 'ecossistema' | 'pendencias'>('dashboard');
   const [editingDocument, setEditingDocument] = useState<AppDocument | null>(null);
   const [isViewOnly, setIsViewOnly] = useState(false);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
@@ -127,7 +128,7 @@ const App: React.FC = () => {
 
   const isSidebarCollapsed = (currentView === 'form' || currentView === 'oficio' || currentView === 'notificacao') || isSidebarManualCollapsed;
   
-  const handleNavigate = (view: 'dashboard' | 'list' | 'form' | 'oficio' | 'info' | 'users' | 'notificacao' | 'controle_notificacoes' | 'audit' | 'ecossistema', doc: AppDocument | null = null, viewOnly: boolean = false) => {
+  const handleNavigate = (view: 'dashboard' | 'list' | 'form' | 'oficio' | 'info' | 'users' | 'notificacao' | 'controle_notificacoes' | 'audit' | 'ecossistema' | 'pendencias', doc: AppDocument | null = null, viewOnly: boolean = false) => {
     if (view === 'users' && !isAdmin) {
       setCurrentView('dashboard');
       setIsMobileMenuOpen(false);
@@ -348,6 +349,14 @@ const App: React.FC = () => {
                 )}
               </button>
 
+              <button 
+                onClick={() => handleNavigate('pendencias')}
+                className={`flex items-center gap-3 w-full px-4 py-2 rounded-xl transition-all duration-200 group ${currentView === 'pendencias' ? 'bg-emerald-500 text-white shadow-lg shadow-emerald-500/20' : 'text-slate-400 hover:bg-slate-800/50 hover:text-white'}`}
+              >
+                <ListChecks size={20} className={`shrink-0 transition-transform group-hover:scale-110 ${currentView === 'pendencias' ? 'text-white' : 'text-slate-500 group-hover:text-emerald-400'}`} />
+                <span className="font-bold text-sm whitespace-nowrap tracking-tight">Pendências</span>
+              </button>
+
               <div className="pt-2 pb-1 px-4">
                 <div className="h-px bg-slate-800 w-full"></div>
               </div>
@@ -463,6 +472,13 @@ const App: React.FC = () => {
                   <span className="absolute top-1.5 right-1.5 w-2.5 h-2.5 rounded-full bg-amber-400" />
                 )}
               </button>
+              <button 
+                onClick={() => handleNavigate('pendencias')}
+                className={`p-3 rounded-xl transition-all ${currentView === 'pendencias' ? 'bg-emerald-500 text-white shadow-lg shadow-emerald-500/20' : 'text-slate-500 hover:bg-slate-800 hover:text-white'}`}
+                title="Pendências"
+              >
+                <ListChecks size={24} />
+              </button>
 
               {isAdmin && (
                 <button 
@@ -520,6 +536,7 @@ const App: React.FC = () => {
                 {currentView === 'users' && <Users size={17} />}
                 {currentView === 'audit' && <Shield size={17} />}
                 {currentView === 'ecossistema' && <Globe size={17} />}
+                {currentView === 'pendencias' && <ListChecks size={17} />}
               </div>
               <div className="flex flex-col">
                 <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest leading-none">
@@ -533,6 +550,7 @@ const App: React.FC = () => {
                   {currentView === 'oficio' && (isViewOnly ? 'Visualizar Ofício de Pendências' : 'Ofício de Pendências')}
                   {currentView === 'notificacao' && (isViewOnly ? 'Visualizar Notificação' : 'Formulário de Notificação')}
                   {currentView === 'ecossistema' && 'Ecossistema & Administra'}
+                  {currentView === 'pendencias' && 'Módulo de Pendências'}
                   {currentView === 'info' && 'Informações do Sistema'}
                   {currentView === 'users' && 'Gestão de Usuários'}
                   {currentView === 'audit' && 'Auditoria de Ações'}
@@ -723,6 +741,8 @@ const App: React.FC = () => {
             <AuditLogs />
           ) : currentView === 'ecossistema' ? (
             <EcossistemaAdministra />
+          ) : currentView === 'pendencias' ? (
+            <PendenciasView />
           ) : (
              <div className="p-6 md:p-12 max-w-[1600px] mx-auto w-full animate-fade-in space-y-12">
                 

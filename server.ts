@@ -1,5 +1,6 @@
 import express from "express";
 import dotenv from "dotenv";
+import crypto from "crypto";
 
 dotenv.config();
 
@@ -27,6 +28,7 @@ type UserRole = "Administrador" | "Analista" | "Visualizador";
 
 interface AuthenticatedUser {
   id: string;
+  perfilId?: string;
   email: string;
   nome: string;
   perfil: UserRole;
@@ -196,12 +198,14 @@ const NON_DOC_TEXT_FIELDS = new Set([
 
 function maskEmbeddedCpfCnpjInText(text: string): string {
   return text
-    .replace(/(?<![A-Za-z0-9])\d{2}\.\d{3}\.\d{3}\/\d{4}-(\d{2})(?![A-Za-z0-9])/g, "**.***.***/****-$1")
-    .replace(/(?<![A-Za-z0-9])\d{8}\/\d{4}-(\d{2})(?![A-Za-z0-9])/g, "**.***.***/****-$1")
-    .replace(/(?<![A-Za-z0-9])\d{3}\.\d{3}\.\d{3}-(\d{2})(?![A-Za-z0-9])/g, "***.***.***-$1")
-    .replace(/(?<![A-Za-z0-9])\d{9}-(\d{2})(?![A-Za-z0-9])/g, "***.***.***-$1")
-    .replace(/(?<![A-Za-z0-9])\d{12}(\d{2})(?![A-Za-z0-9])/g, "**.***.***/****-$1")
-    .replace(/(?<![A-Za-z0-9])\d{9}(\d{2})(?![A-Za-z0-9])/g, "***.***.***-$1");
+    .replace(
+      /(?<![A-Za-z0-9])(?:\d[\t \u00A0./-]*){12}(\d)[\t \u00A0./-]*(\d)(?![A-Za-z0-9])/g,
+      "**.***.***/****-$1$2"
+    )
+    .replace(
+      /(?<![A-Za-z0-9])(?:\d[\t \u00A0./-]*){9}(\d)[\t \u00A0./-]*(\d)(?![A-Za-z0-9])/g,
+      "***.***.***-$1$2"
+    );
 }
 
 function isNormalizedDocFieldKey(key: string): boolean {
@@ -997,6 +1001,7 @@ async function requireAuth(req: express.Request, res: express.Response, next: ex
 
   (req as AuthenticatedRequest).authUser = {
     id: authUserId || String(matched.id || ""),
+    perfilId: matched.id ? String(matched.id) : undefined,
     email,
     nome: String(matched.nome || email).trim(),
     perfil,
@@ -1911,10 +1916,26 @@ app.delete("/api/registry/:kind/:id", requireRole(["Administrador"]), async (req
 // Notifica CSB Document Persistence Proxy (lean flat columns only)
 const ALLOWED_DOC_KINDS = new Set(["pareceres", "oficios", "notificacoes"]);
 
-function sanitizeFlatRow(raw: Record<string, any>): Record<string, string | number | boolean | null> {
-  const flat: Record<string, string | number | boolean | null> = {};
+type FlatRowValue = string | number | boolean | null | Record<string, unknown> | unknown[];
+
+function isValidJsonValue(val: unknown): boolean {
+  if (val === null || typeof val !== "object") return false;
+  try {
+    JSON.stringify(val);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function sanitizeFlatRow(raw: Record<string, any>): Record<string, FlatRowValue> {
+  const flat: Record<string, FlatRowValue> = {};
   for (const [key, val] of Object.entries(raw || {})) {
     if (val === undefined) continue;
+    if (key === "dados_legados" && isValidJsonValue(val)) {
+      flat[key] = val as Record<string, unknown> | unknown[];
+      continue;
+    }
     if (val === null || typeof val === "string" || typeof val === "number" || typeof val === "boolean") {
       flat[key] = val;
     } else if (Array.isArray(val)) {
@@ -1930,7 +1951,7 @@ function sanitizeFlatRow(raw: Record<string, any>): Record<string, string | numb
 async function upsertDocumentWithColumnFallback(
   cfg: RemoteServiceConfig,
   table: string,
-  row: Record<string, string | number | boolean | null>
+  row: Record<string, FlatRowValue>
 ) {
   const working = { ...row };
   const baseUrl = buildRestBaseUrl(cfg.endpoint);
@@ -2063,6 +2084,516 @@ app.delete("/api/documents/:kind/:id", requireRole(["Administrador"]), async (re
     remoteEnabled: true,
     deleted: true,
   });
+});
+
+// =========================================================================
+// MÓDULO DE PENDÊNCIAS (public.pendencias & public.pendencias_historico)
+// =========================================================================
+
+const PENDENCIA_SITUACOES = new Set([
+  "aberta",
+  "direcionada",
+  "em_analise",
+  "resolvida",
+  "cancelada",
+]);
+
+const PENDENCIA_EDITABLE_FIELDS = [
+  "tipo",
+  "titulo",
+  "descricao",
+  "tipo_referencia",
+  "referencia_id",
+  "empreendedor_id",
+  "barragem_id",
+  "origem_ref_id",
+] as const;
+
+function sanitizePendenciaText(val: unknown): string {
+  if (typeof val !== "string") return "";
+  return val
+    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, "")
+    .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, "")
+    .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, "")
+    .replace(/<[^>]*>?/gm, "")
+    .trim();
+}
+
+function optionalCleanPendenciaText(val: unknown): string | null {
+  const clean = sanitizePendenciaText(val);
+  return clean ? clean : null;
+}
+
+function isSameSessionUser(candidateId: unknown, authUser: AuthenticatedUser): boolean {
+  const candidate = String(candidateId || "").trim();
+  if (!candidate) return false;
+  if (candidate === authUser.id) return true;
+  if (authUser.perfilId && candidate === authUser.perfilId) return true;
+  return false;
+}
+
+function maskPendenciaRow<T extends Record<string, any>>(row: T): T {
+  return {
+    ...row,
+    titulo: typeof row.titulo === "string" ? maskEmbeddedCpfCnpjInText(row.titulo) : row.titulo,
+    descricao: typeof row.descricao === "string" ? maskEmbeddedCpfCnpjInText(row.descricao) : row.descricao,
+  };
+}
+
+function maskPendenciaHistoricoRow<T extends Record<string, any>>(row: T): T {
+  const isIdField = row.campo === "responsavel_id" || row.campo === "empreendedor_id" || row.campo === "barragem_id" || row.campo === "referencia_id" || row.campo === "origem_ref_id";
+  return {
+    ...row,
+    valor_anterior:
+      !isIdField && typeof row.valor_anterior === "string"
+        ? maskEmbeddedCpfCnpjInText(row.valor_anterior)
+        : row.valor_anterior,
+    valor_novo:
+      !isIdField && typeof row.valor_novo === "string"
+        ? maskEmbeddedCpfCnpjInText(row.valor_novo)
+        : row.valor_novo,
+    motivo: typeof row.motivo === "string" ? maskEmbeddedCpfCnpjInText(row.motivo) : row.motivo,
+  };
+}
+
+async function fetchActiveNotificaUsers(cfg: RemoteServiceConfig) {
+  const res = await remoteRestRequest<Array<{
+    id?: string;
+    email?: string;
+    nome?: string;
+    perfil?: string;
+    status?: string;
+  }>>(cfg, "perfis_usuarios", {
+    query: "select=id,email,nome,perfil,status&order=nome.asc&limit=500",
+  });
+  if (!res.ok || !Array.isArray(res.data)) {
+    return { ok: false, users: [] as Array<{ id: string; email: string; nome: string; perfil: UserRole }> };
+  }
+  const users = res.data
+    .filter((u) => String(u.status || "").trim().toLowerCase() === "ativo")
+    .map((u) => {
+      const perfil = normalizeUserRole(u.perfil);
+      const id = String(u.id || "").trim();
+      if (!perfil || !id) return null;
+      return {
+        id,
+        email: String(u.email || "").trim().toLowerCase(),
+        nome: String(u.nome || u.email || id).trim(),
+        perfil,
+      };
+    })
+    .filter((u): u is { id: string; email: string; nome: string; perfil: UserRole } => Boolean(u));
+
+  return { ok: true, users };
+}
+
+app.get("/api/pendencias", async (req, res) => {
+  const authUser = getSessionIdentity(req);
+  if (!authUser) {
+    return res.status(401).json({ error: "Usuário não autenticado." });
+  }
+  const cfg = getServiceConfig("NOTIFICA");
+  if (!cfg) {
+    return res.status(503).json({ error: "Persistência remota do Notifica não configurada no servidor." });
+  }
+
+  const [pendRes, usersRes] = await Promise.all([
+    remoteRestRequest<Record<string, any>[]>(cfg, "pendencias", {
+      query: "select=*&order=updated_at.desc,created_at.desc&limit=1000",
+    }),
+    fetchActiveNotificaUsers(cfg),
+  ]);
+
+  if (!pendRes.ok || !Array.isArray(pendRes.data)) {
+    return res.status(502).json({ error: "Falha ao carregar pendências no servidor." });
+  }
+
+  const isAdmin = authUser.perfil === "Administrador";
+  const includeFullDoc = canViewFullDocument(req);
+  const items = includeFullDoc ? pendRes.data : pendRes.data.map((row) => maskPendenciaRow(row));
+  const usuarios = usersRes.ok
+    ? usersRes.users.map((u) => ({
+        id: u.id,
+        nome: u.nome,
+        perfil: u.perfil,
+        ...(isAdmin ? { email: u.email } : {}),
+      }))
+    : [];
+
+  return res.json({
+    items,
+    usuarios,
+    currentUser: {
+      id: authUser.id,
+      perfilId: authUser.perfilId || authUser.id,
+      nome: authUser.nome,
+      perfil: authUser.perfil,
+    },
+  });
+});
+
+app.get("/api/pendencias/:id/historico", async (req, res) => {
+  const authUser = getSessionIdentity(req);
+  if (!authUser) {
+    return res.status(401).json({ error: "Usuário não autenticado." });
+  }
+  const id = String(req.params.id || "").trim();
+  if (!id) {
+    return res.status(400).json({ error: "ID da pendência inválido." });
+  }
+  const cfg = getServiceConfig("NOTIFICA");
+  if (!cfg) {
+    return res.status(503).json({ error: "Persistência remota do Notifica não configurada no servidor." });
+  }
+
+  const [pendCheck, histRes] = await Promise.all([
+    remoteRestRequest<Record<string, any>[]>(cfg, "pendencias", {
+      query: `select=id&id=eq.${encodeURIComponent(id)}&limit=1`,
+    }),
+    remoteRestRequest<Record<string, any>[]>(cfg, "pendencias_historico", {
+      query: `select=*&pendencia_id=eq.${encodeURIComponent(id)}&order=created_at.desc&limit=500`,
+    }),
+  ]);
+
+  if (!pendCheck.ok || !Array.isArray(pendCheck.data)) {
+    return res.status(502).json({ error: "Falha ao consultar pendência." });
+  }
+  if (pendCheck.data.length === 0) {
+    return res.status(404).json({ error: "Pendência não encontrada." });
+  }
+  if (!histRes.ok || !Array.isArray(histRes.data)) {
+    return res.status(502).json({ error: "Falha ao carregar histórico da pendência." });
+  }
+
+  const includeFullDoc = canViewFullDocument(req);
+  const items = includeFullDoc ? histRes.data : histRes.data.map((row) => maskPendenciaHistoricoRow(row));
+  return res.json({ items });
+});
+
+app.post("/api/pendencias", requireRole(["Administrador", "Analista"]), async (req, res) => {
+  const authUser = getSessionIdentity(req);
+  if (!authUser) {
+    return res.status(401).json({ error: "Usuário não autenticado." });
+  }
+  const cfg = getServiceConfig("NOTIFICA");
+  if (!cfg) {
+    return res.status(503).json({ error: "Persistência remota do Notifica não configurada no servidor." });
+  }
+
+  const body = req.body || {};
+  const titulo = sanitizePendenciaText(body.titulo);
+  if (!titulo) {
+    return res.status(400).json({ error: "Informe o título da pendência." });
+  }
+
+  const isAdmin = authUser.perfil === "Administrador";
+  const requestedRespId = optionalCleanPendenciaText(body.responsavel_id);
+  if (requestedRespId && !isAdmin) {
+    return res.status(403).json({ error: "Apenas Administrador pode definir ou alterar o responsável." });
+  }
+
+  if (requestedRespId) {
+    const usersRes = await fetchActiveNotificaUsers(cfg);
+    if (!usersRes.ok) {
+      return res.status(502).json({ error: "Não foi possível validar o usuário responsável." });
+    }
+    const targetExists = usersRes.users.some((u) => u.id === requestedRespId);
+    if (!targetExists) {
+      return res.status(400).json({ error: "Responsável selecionado não existe ou está inativo." });
+    }
+  }
+
+  const rawSituacao = optionalCleanPendenciaText(body.situacao);
+  if (rawSituacao && !PENDENCIA_SITUACOES.has(rawSituacao)) {
+    return res.status(400).json({ error: "Situação inválida para a pendência." });
+  }
+  if (!isAdmin && rawSituacao === "direcionada") {
+    return res.status(403).json({ error: "Apenas Administrador pode direcionar pendências." });
+  }
+
+  const situacao = rawSituacao || (requestedRespId ? "direcionada" : "aberta");
+  const now = new Date().toISOString();
+  const pendenciaId = crypto.randomUUID();
+  const motivo = optionalCleanPendenciaText(body.motivo);
+
+  const newRow = {
+    id: pendenciaId,
+    origem: "NOTIFICA",
+    origem_ref_id: optionalCleanPendenciaText(body.origem_ref_id),
+    tipo: sanitizePendenciaText(body.tipo) || "Geral",
+    titulo,
+    descricao: optionalCleanPendenciaText(body.descricao),
+    situacao,
+    responsavel_id: requestedRespId,
+    direcionado_por: requestedRespId ? authUser.id : null,
+    direcionado_em: requestedRespId ? now : null,
+    criado_por: authUser.id,
+    tipo_referencia: optionalCleanPendenciaText(body.tipo_referencia),
+    referencia_id: optionalCleanPendenciaText(body.referencia_id),
+    empreendedor_id: optionalCleanPendenciaText(body.empreendedor_id),
+    barragem_id: optionalCleanPendenciaText(body.barragem_id),
+    resolvido_por: situacao === "resolvida" ? authUser.id : null,
+    resolvido_em: situacao === "resolvida" ? now : null,
+    created_at: now,
+    updated_at: now,
+  };
+
+  const insertRes = await remoteRestRequest<Record<string, any>[]>(cfg, "pendencias", {
+    method: "POST",
+    prefer: "return=representation",
+    body: newRow,
+  });
+
+  if (!insertRes.ok || !Array.isArray(insertRes.data) || !insertRes.data[0]) {
+    return res.status(502).json({ error: "Falha ao registrar pendência no banco remoto." });
+  }
+
+  const created = insertRes.data[0];
+  const historyRows: Record<string, any>[] = [
+    {
+      id: crypto.randomUUID(),
+      pendencia_id: created.id,
+      acao: "criacao",
+      campo: "situacao",
+      valor_anterior: null,
+      valor_novo: situacao,
+      usuario_id: authUser.id,
+      motivo,
+      created_at: now,
+    },
+  ];
+
+  if (requestedRespId) {
+    historyRows.push({
+      id: crypto.randomUUID(),
+      pendencia_id: created.id,
+      acao: "direcionamento",
+      campo: "responsavel_id",
+      valor_anterior: null,
+      valor_novo: requestedRespId,
+      usuario_id: authUser.id,
+      motivo: motivo || "Direcionamento inicial",
+      created_at: now,
+    });
+  }
+
+  if (situacao === "resolvida") {
+    historyRows.push({
+      id: crypto.randomUUID(),
+      pendencia_id: created.id,
+      acao: "resolucao",
+      campo: "situacao",
+      valor_anterior: null,
+      valor_novo: "resolvida",
+      usuario_id: authUser.id,
+      motivo,
+      created_at: now,
+    });
+  }
+
+  const histRes = await remoteRestRequest(cfg, "pendencias_historico", {
+    method: "POST",
+    prefer: "return=representation",
+    body: historyRows,
+  });
+
+  if (!histRes.ok) {
+    return res.status(502).json({ error: "Pendência criada, mas houve falha ao registrar o histórico obrigatório." });
+  }
+
+  return res.status(201).json({ item: created });
+});
+
+app.patch("/api/pendencias/:id", requireRole(["Administrador", "Analista"]), async (req, res) => {
+  const authUser = getSessionIdentity(req);
+  if (!authUser) {
+    return res.status(401).json({ error: "Usuário não autenticado." });
+  }
+  const id = String(req.params.id || "").trim();
+  if (!id) {
+    return res.status(400).json({ error: "ID da pendência inválido." });
+  }
+  const cfg = getServiceConfig("NOTIFICA");
+  if (!cfg) {
+    return res.status(503).json({ error: "Persistência remota do Notifica não configurada no servidor." });
+  }
+
+  const existingRes = await remoteRestRequest<Record<string, any>[]>(cfg, "pendencias", {
+    query: `select=*&id=eq.${encodeURIComponent(id)}&limit=1`,
+  });
+  if (!existingRes.ok || !Array.isArray(existingRes.data)) {
+    return res.status(502).json({ error: "Falha ao consultar pendência para atualização." });
+  }
+  const existing = existingRes.data[0];
+  if (!existing) {
+    return res.status(404).json({ error: "Pendência não encontrada." });
+  }
+
+  const body = req.body || {};
+  const isAdmin = authUser.perfil === "Administrador";
+  const hasRespField = Object.prototype.hasOwnProperty.call(body, "responsavel_id");
+  const existingRespId = optionalCleanPendenciaText(existing.responsavel_id);
+  const nextRespId = hasRespField ? optionalCleanPendenciaText(body.responsavel_id) : existingRespId;
+  const respChanged = hasRespField && nextRespId !== existingRespId;
+
+  if (respChanged && !isAdmin) {
+    return res.status(403).json({ error: "Usuários não administradores não podem escolher ou alterar o responsável." });
+  }
+
+  if (!isAdmin) {
+    if (existingRespId && !isSameSessionUser(existingRespId, authUser)) {
+      return res.status(403).json({ error: "Você não tem permissão para alterar ou resolver pendência atribuída a outro usuário." });
+    }
+    const requestedStatusNonAdmin = Object.prototype.hasOwnProperty.call(body, "situacao")
+      ? optionalCleanPendenciaText(body.situacao)
+      : null;
+    if (requestedStatusNonAdmin === "direcionada" && existing.situacao !== "direcionada") {
+      return res.status(403).json({ error: "Apenas Administrador pode definir a situação como direcionada." });
+    }
+  }
+
+  if (respChanged && nextRespId) {
+    const usersRes = await fetchActiveNotificaUsers(cfg);
+    if (!usersRes.ok) {
+      return res.status(502).json({ error: "Não foi possível validar o responsável selecionado." });
+    }
+    const targetExists = usersRes.users.some((u) => u.id === nextRespId);
+    if (!targetExists) {
+      return res.status(400).json({ error: "Responsável selecionado não existe ou está inativo." });
+    }
+  }
+
+  const hasSituacaoField = Object.prototype.hasOwnProperty.call(body, "situacao");
+  const requestedSituacao = hasSituacaoField ? optionalCleanPendenciaText(body.situacao) : null;
+  if (hasSituacaoField && (!requestedSituacao || !PENDENCIA_SITUACOES.has(requestedSituacao))) {
+    return res.status(400).json({ error: "Situação inválida para a pendência." });
+  }
+
+  const now = new Date().toISOString();
+  const motivo = optionalCleanPendenciaText(body.motivo);
+  const patchPayload: Record<string, any> = {};
+  const historyRows: Record<string, any>[] = [];
+
+  for (const field of PENDENCIA_EDITABLE_FIELDS) {
+    if (!Object.prototype.hasOwnProperty.call(body, field)) continue;
+    const prevVal = optionalCleanPendenciaText(existing[field]);
+    const nextVal = field === "titulo" || field === "tipo"
+      ? sanitizePendenciaText(body[field])
+      : optionalCleanPendenciaText(body[field]);
+
+    if (field === "titulo" && !nextVal) {
+      return res.status(400).json({ error: "O título da pendência não pode ficar vazio." });
+    }
+    if (field === "tipo" && !nextVal) {
+      return res.status(400).json({ error: "O tipo da pendência não pode ficar vazio." });
+    }
+
+    if ((prevVal ?? null) !== (nextVal ?? null)) {
+      patchPayload[field] = nextVal || null;
+      historyRows.push({
+        id: crypto.randomUUID(),
+        pendencia_id: id,
+        acao: "edicao",
+        campo: field,
+        valor_anterior: prevVal,
+        valor_novo: nextVal || null,
+        usuario_id: authUser.id,
+        motivo,
+        created_at: now,
+      });
+    }
+  }
+
+  if (respChanged) {
+    patchPayload.responsavel_id = nextRespId;
+    patchPayload.direcionado_por = nextRespId ? authUser.id : null;
+    patchPayload.direcionado_em = nextRespId ? now : null;
+    historyRows.push({
+      id: crypto.randomUUID(),
+      pendencia_id: id,
+      acao: "direcionamento",
+      campo: "responsavel_id",
+      valor_anterior: existingRespId,
+      valor_novo: nextRespId,
+      usuario_id: authUser.id,
+      motivo,
+      created_at: now,
+    });
+  }
+
+  let nextSituacao = requestedSituacao || String(existing.situacao || "aberta");
+  if (!hasSituacaoField && respChanged) {
+    if (nextRespId && existing.situacao === "aberta") {
+      nextSituacao = "direcionada";
+    } else if (!nextRespId && existing.situacao === "direcionada") {
+      nextSituacao = "aberta";
+    }
+  }
+
+  if (nextSituacao !== existing.situacao) {
+    patchPayload.situacao = nextSituacao;
+    if (nextSituacao === "resolvida") {
+      patchPayload.resolvido_por = authUser.id;
+      patchPayload.resolvido_em = now;
+      historyRows.push({
+        id: crypto.randomUUID(),
+        pendencia_id: id,
+        acao: "resolucao",
+        campo: "situacao",
+        valor_anterior: existing.situacao || null,
+        valor_novo: "resolvida",
+        usuario_id: authUser.id,
+        motivo,
+        created_at: now,
+      });
+    } else {
+      if (existing.situacao === "resolvida") {
+        patchPayload.resolvido_por = null;
+        patchPayload.resolvido_em = null;
+      }
+      historyRows.push({
+        id: crypto.randomUUID(),
+        pendencia_id: id,
+        acao: "mudanca_situacao",
+        campo: "situacao",
+        valor_anterior: existing.situacao || null,
+        valor_novo: nextSituacao,
+        usuario_id: authUser.id,
+        motivo,
+        created_at: now,
+      });
+    }
+  }
+
+  if (Object.keys(patchPayload).length === 0) {
+    return res.json({ item: existing, unchanged: true });
+  }
+
+  patchPayload.updated_at = now;
+
+  const updateRes = await remoteRestRequest<Record<string, any>[]>(cfg, "pendencias", {
+    method: "PATCH",
+    query: `id=eq.${encodeURIComponent(id)}`,
+    prefer: "return=representation",
+    body: patchPayload,
+  });
+
+  if (!updateRes.ok || !Array.isArray(updateRes.data) || !updateRes.data[0]) {
+    return res.status(502).json({ error: "Falha ao atualizar pendência no banco remoto." });
+  }
+
+  if (historyRows.length > 0) {
+    const histRes = await remoteRestRequest(cfg, "pendencias_historico", {
+      method: "POST",
+      prefer: "return=representation",
+      body: historyRows,
+    });
+    if (!histRes.ok) {
+      return res.status(502).json({ error: "Pendência atualizada, mas houve falha ao registrar o histórico obrigatório." });
+    }
+  }
+
+  return res.json({ item: updateRes.data[0] });
 });
 
 const isProduction = process.env.NODE_ENV === "production" || Boolean(process.env.VERCEL);
