@@ -59,13 +59,18 @@ import { useNotifications } from './contexts/NotificationContext';
 import { useAuth } from './contexts/AuthContext';
 import { UserManagement } from './components/UserManagement';
 import { ChangePasswordModal } from './components/ChangePasswordModal';
-import { AuditLogs } from './components/AuditLogs';
+import {
+  AuditLogs,
+  AppViewId,
+  isAuditMenuVisible,
+  resolveAuthorizedAppView,
+} from './components/AuditLogs';
 import { ParecerData, OficioData } from './types';
 import { AppDocument } from './contexts/DataContext';
 
 // Main App Component
 const App: React.FC = () => {
-  const [currentView, setCurrentView] = useState<'dashboard' | 'list' | 'form' | 'oficio' | 'info' | 'users' | 'notificacao' | 'controle_notificacoes' | 'audit' | 'ecossistema' | 'pendencias'>('dashboard');
+  const [currentView, setCurrentView] = useState<AppViewId>('dashboard');
   const [editingDocument, setEditingDocument] = useState<AppDocument | null>(null);
   const [isViewOnly, setIsViewOnly] = useState(false);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
@@ -88,7 +93,10 @@ const App: React.FC = () => {
   };
   const [activeInfo, setActiveInfo] = useState<string | null>(null);
   
-  const { user, profile, role, isAdmin, canEdit, signOut } = useAuth();
+  const { session, user, profile, role, isAdmin, canEdit, signOut } = useAuth();
+  const hasSession = Boolean(session && user && profile);
+  const showAuditMenu = isAuditMenuVisible({ hasSession, isAdmin });
+  const effectiveView = resolveAuthorizedAppView(currentView, { hasSession, isAdmin });
   const data = useContext(DataContext);
   const { pendingIncomingCount } = useContext(EcosystemContext);
   const notifications = useNotifications ? useNotifications() : { pendingCount: 0, importantUpdate: false };
@@ -129,10 +137,16 @@ const App: React.FC = () => {
     };
   }, [pendingCount, importantUpdate]);
 
-  const isSidebarCollapsed = (currentView === 'form' || currentView === 'oficio' || currentView === 'notificacao') || isSidebarManualCollapsed;
+  useEffect(() => {
+    if ((currentView === 'users' || currentView === 'audit') && (!hasSession || !isAdmin)) {
+      setCurrentView('dashboard');
+    }
+  }, [currentView, hasSession, isAdmin]);
+
+  const isSidebarCollapsed = (effectiveView === 'form' || effectiveView === 'oficio' || effectiveView === 'notificacao') || isSidebarManualCollapsed;
   
-  const handleNavigate = (view: 'dashboard' | 'list' | 'form' | 'oficio' | 'info' | 'users' | 'notificacao' | 'controle_notificacoes' | 'audit' | 'ecossistema' | 'pendencias', doc: AppDocument | null = null, viewOnly: boolean = false) => {
-    if (view === 'users' && !isAdmin) {
+  const handleNavigate = (view: AppViewId, doc: AppDocument | null = null, viewOnly: boolean = false) => {
+    if ((view === 'users' || view === 'audit') && (!hasSession || !isAdmin)) {
       setCurrentView('dashboard');
       setIsMobileMenuOpen(false);
       setIsQuickCreateOpen(false);
@@ -382,13 +396,15 @@ const App: React.FC = () => {
                 </button>
               )}
 
-              <button 
-                onClick={() => handleNavigate('audit')}
-                className={`flex items-center gap-3 w-full px-4 py-2 rounded-xl transition-all duration-200 group ${currentView === 'audit' ? 'bg-emerald-500 text-white shadow-lg shadow-emerald-500/20' : 'text-slate-400 hover:bg-slate-800/50 hover:text-white'}`}
-              >
-                <Shield size={20} className={`shrink-0 transition-transform group-hover:scale-110 ${currentView === 'audit' ? 'text-white' : 'text-slate-500 group-hover:text-emerald-400'}`} />
-                <span className="font-bold text-sm whitespace-nowrap tracking-tight">Auditoria</span>
-              </button>
+              {showAuditMenu && (
+                <button 
+                  onClick={() => handleNavigate('audit')}
+                  className={`flex items-center gap-3 w-full px-4 py-2 rounded-xl transition-all duration-200 group ${currentView === 'audit' ? 'bg-emerald-500 text-white shadow-lg shadow-emerald-500/20' : 'text-slate-400 hover:bg-slate-800/50 hover:text-white'}`}
+                >
+                  <Shield size={20} className={`shrink-0 transition-transform group-hover:scale-110 ${currentView === 'audit' ? 'text-white' : 'text-slate-500 group-hover:text-emerald-400'}`} />
+                  <span className="font-bold text-sm whitespace-nowrap tracking-tight">Auditoria</span>
+                </button>
+              )}
             </nav>
 
             <div className="p-4 border-t border-slate-800/80 bg-slate-950/40 space-y-2.5">
@@ -505,13 +521,15 @@ const App: React.FC = () => {
                   <Users size={24} />
                 </button>
               )}
-              <button 
-                onClick={() => handleNavigate('audit')}
-                className={`p-3 rounded-xl transition-all ${currentView === 'audit' ? 'bg-emerald-500 text-white shadow-lg shadow-emerald-500/20' : 'text-slate-500 hover:bg-slate-800 hover:text-white'}`}
-                title="Log de Auditoria"
-              >
-                <Shield size={24} />
-              </button>
+              {showAuditMenu && (
+                <button 
+                  onClick={() => handleNavigate('audit')}
+                  className={`p-3 rounded-xl transition-all ${currentView === 'audit' ? 'bg-emerald-500 text-white shadow-lg shadow-emerald-500/20' : 'text-slate-500 hover:bg-slate-800 hover:text-white'}`}
+                  title="Log de Auditoria"
+                >
+                  <Shield size={24} />
+                </button>
+              )}
             </div>
 
             <div className="w-8 h-px bg-slate-800"></div>
@@ -551,34 +569,34 @@ const App: React.FC = () => {
           <div className="flex items-center justify-between gap-3 shrink-0">
             <div className="flex items-center gap-2.5">
               <div className="w-8 h-8 rounded-xl bg-emerald-500/10 text-emerald-600 flex items-center justify-center font-bold shadow-2xs">
-                {currentView === 'dashboard' && <LayoutDashboard size={17} />}
-                {currentView === 'list' && <Database size={17} />}
-                {currentView === 'controle_notificacoes' && <Bell size={17} />}
-                {currentView === 'form' && <ClipboardCheck size={17} />}
-                {currentView === 'oficio' && <FileWarning size={17} />}
-                {currentView === 'notificacao' && <Bell size={17} />}
-                {currentView === 'info' && <Info size={17} />}
-                {currentView === 'users' && <Users size={17} />}
-                {currentView === 'audit' && <Shield size={17} />}
-                {currentView === 'ecossistema' && <Globe size={17} />}
-                {currentView === 'pendencias' && <ListChecks size={17} />}
+                {effectiveView === 'dashboard' && <LayoutDashboard size={17} />}
+                {effectiveView === 'list' && <Database size={17} />}
+                {effectiveView === 'controle_notificacoes' && <Bell size={17} />}
+                {effectiveView === 'form' && <ClipboardCheck size={17} />}
+                {effectiveView === 'oficio' && <FileWarning size={17} />}
+                {effectiveView === 'notificacao' && <Bell size={17} />}
+                {effectiveView === 'info' && <Info size={17} />}
+                {effectiveView === 'users' && <Users size={17} />}
+                {effectiveView === 'audit' && showAuditMenu && <Shield size={17} />}
+                {effectiveView === 'ecossistema' && <Globe size={17} />}
+                {effectiveView === 'pendencias' && <ListChecks size={17} />}
               </div>
               <div className="flex flex-col">
                 <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest leading-none">
                   SEMA/MT • CSB
                 </span>
                 <span className="text-sm font-black text-slate-900 tracking-tight leading-tight">
-                  {currentView === 'dashboard' && 'Painel de Controle'}
-                  {currentView === 'list' && 'Banco de Dados'}
-                  {currentView === 'controle_notificacoes' && 'Controle de Notificações'}
-                  {currentView === 'form' && (isViewOnly ? 'Visualizar Parecer Técnico' : 'Parecer Técnico')}
-                  {currentView === 'oficio' && (isViewOnly ? 'Visualizar Ofício de Pendências' : 'Ofício de Pendências')}
-                  {currentView === 'notificacao' && (isViewOnly ? 'Visualizar Notificação' : 'Formulário de Notificação')}
-                  {currentView === 'ecossistema' && 'Ecossistema & Administra'}
-                  {currentView === 'pendencias' && 'Módulo de Pendências'}
-                  {currentView === 'info' && 'Informações do Sistema'}
-                  {currentView === 'users' && 'Gestão de Usuários'}
-                  {currentView === 'audit' && 'Auditoria de Ações'}
+                  {effectiveView === 'dashboard' && 'Painel de Controle'}
+                  {effectiveView === 'list' && 'Banco de Dados'}
+                  {effectiveView === 'controle_notificacoes' && 'Controle de Notificações'}
+                  {effectiveView === 'form' && (isViewOnly ? 'Visualizar Parecer Técnico' : 'Parecer Técnico')}
+                  {effectiveView === 'oficio' && (isViewOnly ? 'Visualizar Ofício de Pendências' : 'Ofício de Pendências')}
+                  {effectiveView === 'notificacao' && (isViewOnly ? 'Visualizar Notificação' : 'Formulário de Notificação')}
+                  {effectiveView === 'ecossistema' && 'Ecossistema & Administra'}
+                  {effectiveView === 'pendencias' && 'Módulo de Pendências'}
+                  {effectiveView === 'info' && 'Informações do Sistema'}
+                  {effectiveView === 'users' && 'Gestão de Usuários'}
+                  {effectiveView === 'audit' && showAuditMenu && 'Auditoria de Ações'}
                 </span>
               </div>
             </div>
@@ -662,7 +680,7 @@ const App: React.FC = () => {
         </header>
 
         <div className="flex-1 w-full max-w-[1600px] mx-auto">
-          {currentView === 'dashboard' ? (
+          {effectiveView === 'dashboard' ? (
             <Dashboard 
               onNewParecer={() => handleNavigate('form')} 
               onNewOficio={() => handleNavigate('oficio')}
@@ -680,7 +698,7 @@ const App: React.FC = () => {
                 handleNavigate('notificacao', n, true);
               }}
             />
-          ) : currentView === 'controle_notificacoes' ? (
+          ) : effectiveView === 'controle_notificacoes' ? (
             <ControleNotificacoes 
               onEditNotificacao={(n) => {
                 setReturnView('controle_notificacoes');
@@ -691,7 +709,7 @@ const App: React.FC = () => {
                 handleNavigate('notificacao', n, true);
               }}
             />
-          ) : currentView === 'list' ? (
+          ) : effectiveView === 'list' ? (
             <ParecerList 
               onEditParecer={(p) => {
                 if (p.tipo_documento?.startsWith('Parecer')) {
@@ -714,7 +732,7 @@ const App: React.FC = () => {
                 }
               }}
             />
-          ) : currentView === 'form' ? (
+          ) : effectiveView === 'form' ? (
             <OpinionForm 
               initialData={editingDocument as ParecerData}
               readOnly={isViewOnly || !canEdit}
@@ -724,7 +742,7 @@ const App: React.FC = () => {
               }} 
               onNavigate={handleNavigate}
             />
-          ) : currentView === 'oficio' ? (
+          ) : effectiveView === 'oficio' ? (
             <OficioForm 
               initialData={editingDocument as OficioData}
               readOnly={isViewOnly || !canEdit}
@@ -733,7 +751,7 @@ const App: React.FC = () => {
                 refreshData?.();
               }} 
             />
-          ) : currentView === 'notificacao' ? (
+          ) : effectiveView === 'notificacao' ? (
             <NotificaForm 
               initialData={editingDocument as any}
               readOnly={isViewOnly || !canEdit}
@@ -742,9 +760,9 @@ const App: React.FC = () => {
                 refreshData?.();
               }} 
             />
-          ) : currentView === 'users' && isAdmin ? (
+          ) : effectiveView === 'users' && isAdmin ? (
             <UserManagement />
-          ) : currentView === 'users' ? (
+          ) : effectiveView === 'users' ? (
             <Dashboard 
               onNewParecer={() => handleNavigate('form')} 
               onNewOficio={() => handleNavigate('oficio')}
@@ -762,11 +780,11 @@ const App: React.FC = () => {
                 handleNavigate('notificacao', n, true);
               }}
             />
-          ) : currentView === 'audit' ? (
+          ) : effectiveView === 'audit' && showAuditMenu ? (
             <AuditLogs />
-          ) : currentView === 'ecossistema' ? (
+          ) : effectiveView === 'ecossistema' ? (
             <EcossistemaAdministra />
-          ) : currentView === 'pendencias' ? (
+          ) : effectiveView === 'pendencias' ? (
             <PendenciasView />
           ) : (
              <div className="p-6 md:p-12 max-w-[1600px] mx-auto w-full animate-fade-in space-y-12">

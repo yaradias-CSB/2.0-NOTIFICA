@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { 
   Search, Shield, RefreshCw, 
   Trash2, AlertCircle, CheckCircle, LogOut, FileText, 
@@ -6,11 +6,71 @@ import {
   Edit2, User, Terminal
 } from 'lucide-react';
 import { auditRepository } from '../data';
-import { AuditLogRecord } from '../data/types';
+import { AuditLogRecord, AuditRepository } from '../data/types';
+import { useAuth } from '../contexts/AuthContext';
 
 type AuditLog = AuditLogRecord;
 
+export interface AuditAccessState {
+  hasSession: boolean;
+  isAdmin: boolean;
+  loading?: boolean;
+}
+
+export type AppViewId =
+  | 'dashboard'
+  | 'list'
+  | 'form'
+  | 'oficio'
+  | 'info'
+  | 'users'
+  | 'notificacao'
+  | 'controle_notificacoes'
+  | 'audit'
+  | 'ecossistema'
+  | 'pendencias';
+
+export function canAccessAuditLogs(auth: AuditAccessState): boolean {
+  return Boolean(!auth.loading && auth.hasSession && auth.isAdmin);
+}
+
+export function isAuditMenuVisible(auth: { hasSession: boolean; isAdmin: boolean }): boolean {
+  return Boolean(auth.hasSession && auth.isAdmin);
+}
+
+export function resolveAuthorizedAppView(
+  view: AppViewId,
+  auth: { hasSession: boolean; isAdmin: boolean }
+): AppViewId {
+  if ((view === 'users' || view === 'audit') && (!auth.hasSession || !auth.isAdmin)) {
+    return 'dashboard';
+  }
+  return view;
+}
+
+export async function loadAuditLogsForUser(
+  auth: AuditAccessState,
+  repository: Pick<AuditRepository, 'getLogs'> = auditRepository
+): Promise<{ authorized: boolean; logs: AuditLog[] }> {
+  if (!canAccessAuditLogs(auth)) {
+    return { authorized: false, logs: [] };
+  }
+  const localLogs = await repository.getLogs();
+  const sorted = [...localLogs].sort(
+    (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+  );
+  return { authorized: true, logs: sorted };
+}
+
 export const AuditLogs: React.FC = () => {
+  const { session, user, profile, isAdmin, loading: authLoading } = useAuth();
+  const hasSession = Boolean(session && user && profile);
+  const isAuthorizedAdmin = canAccessAuditLogs({
+    hasSession,
+    isAdmin,
+    loading: authLoading,
+  });
+
   const [logs, setLogs] = useState<AuditLog[]>([]);
   const [loading, setLoading] = useState(true);
   
@@ -22,30 +82,43 @@ export const AuditLogs: React.FC = () => {
   
   const [selectedLog, setSelectedLog] = useState<AuditLog | null>(null);
 
-  const fetchLogs = async () => {
+  const fetchLogs = useCallback(async () => {
+    if (!isAuthorizedAdmin) {
+      setLogs([]);
+      setLoading(false);
+      return;
+    }
+
     setLoading(true);
     try {
-      const localLogs = await auditRepository.getLogs();
-      const sorted = [...localLogs].sort(
-        (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+      const result = await loadAuditLogsForUser(
+        { hasSession, isAdmin, loading: authLoading },
+        auditRepository
       );
-      setLogs(sorted);
+      setLogs(result.authorized ? result.logs : []);
     } catch (err) {
       console.warn('Erro ao ler logs de auditoria locais:', err);
       setLogs([]);
     } finally {
       setLoading(false);
     }
-  };
+  }, [authLoading, hasSession, isAdmin, isAuthorizedAdmin]);
 
   useEffect(() => {
-    fetchLogs();
-  }, []);
+    if (authLoading) return;
+    if (!isAuthorizedAdmin) {
+      setLogs([]);
+      setLoading(false);
+      return;
+    }
+    void fetchLogs();
+  }, [authLoading, isAuthorizedAdmin, fetchLogs]);
 
   const handleClearLocalLogs = async () => {
+    if (!isAuthorizedAdmin) return;
     if (window.confirm('Tem certeza de que deseja limpar os logs locais de auditoria?')) {
       await auditRepository.clearLogs();
-      fetchLogs();
+      void fetchLogs();
     }
   };
 
@@ -240,6 +313,32 @@ export const AuditLogs: React.FC = () => {
     link.click();
     document.body.removeChild(link);
   };
+
+  if (authLoading) {
+    return (
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 py-12 flex items-center justify-center">
+        <p className="text-xs font-black uppercase tracking-widest text-slate-400">
+          Verificando permissões...
+        </p>
+      </div>
+    );
+  }
+
+  if (!isAuthorizedAdmin) {
+    return (
+      <div className="p-6 md:p-12 max-w-[900px] mx-auto w-full">
+        <div className="bg-white border border-rose-200 rounded-3xl p-8 text-center space-y-3 shadow-sm">
+          <div className="w-12 h-12 mx-auto rounded-2xl bg-rose-50 text-rose-600 flex items-center justify-center">
+            <Shield size={24} />
+          </div>
+          <h2 className="text-xl font-black text-slate-900">Acesso não autorizado</h2>
+          <p className="text-sm text-slate-600">
+            O módulo de Auditoria é acessível exclusivamente para o perfil Administrador.
+          </p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="max-w-7xl mx-auto space-y-6 animate-fade-in px-4 sm:px-6">

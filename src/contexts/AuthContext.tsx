@@ -22,7 +22,7 @@ export interface PerfilUsuario {
   status: string;
 }
 
-interface AuthContextValue {
+export interface AuthContextValue {
   session: Session | null;
   user: SupabaseUser | null;
   profile: PerfilUsuario | null;
@@ -42,7 +42,7 @@ interface AuthContextValue {
   signOut: () => Promise<void>;
 }
 
-const AuthContext = createContext<AuthContextValue | null>(null);
+export const AuthContext = createContext<AuthContextValue | null>(null);
 
 function normalizePerfilRole(raw: unknown): UserRole | null {
   const val = String(raw || '')
