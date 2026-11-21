@@ -7,13 +7,7 @@ export type PendenciaSituacao =
   | 'resolvida'
   | 'cancelada';
 
-export type PendenciaReferenciaTipo =
-  | 'parecer'
-  | 'oficio'
-  | 'notificacao'
-  | 'empreendedor'
-  | 'barragem'
-  | 'outro';
+export type PendenciasTab = 'minhas' | 'geral' | 'direcionado';
 
 export interface PendenciaRecord {
   id: string;
@@ -58,7 +52,6 @@ export interface PendenciaUsuarioOption {
 
 export interface PendenciaCurrentUser {
   id: string;
-  perfilId: string;
   nome: string;
   perfil: UserRole;
 }
@@ -67,32 +60,6 @@ export interface PendenciaListResponse {
   items: PendenciaRecord[];
   usuarios: PendenciaUsuarioOption[];
   currentUser: PendenciaCurrentUser;
-}
-
-export interface PendenciaCreateInput {
-  tipo: string;
-  titulo: string;
-  descricao?: string;
-  situacao?: PendenciaSituacao;
-  responsavel_id?: string | null;
-  tipo_referencia?: string | null;
-  referencia_id?: string | null;
-  origem_ref_id?: string | null;
-  empreendedor_id?: string | null;
-  barragem_id?: string | null;
-  motivo?: string;
-}
-
-export interface PendenciaUpdateInput {
-  tipo?: string;
-  titulo?: string;
-  descricao?: string | null;
-  situacao?: PendenciaSituacao;
-  responsavel_id?: string | null;
-  tipo_referencia?: string | null;
-  referencia_id?: string | null;
-  origem_ref_id?: string | null;
-  empreendedor_id?: string | null;
-  barragem_id?: string | null;
-  motivo?: string;
+  readOnly: boolean;
+  readOnlyReason?: string;
 }

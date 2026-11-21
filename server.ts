@@ -2090,12 +2090,40 @@ app.delete("/api/documents/:kind/:id", requireRole(["Administrador"]), async (re
 // MÓDULO DE PENDÊNCIAS (public.pendencias & public.pendencias_historico)
 // =========================================================================
 
-const PENDENCIA_SITUACOES = new Set([
+export const PENDENCIA_ORIGEM = "notifica" as const;
+
+export const PENDENCIA_SITUACOES = new Set([
   "aberta",
   "direcionada",
   "em_analise",
   "resolvida",
   "cancelada",
+]);
+
+const PENDENCIA_READ_ROLES = new Set<UserRole>([
+  "Administrador",
+  "Analista",
+  "Visualizador",
+]);
+
+export const PENDENCIA_MUTATION_BLOCKED_MESSAGE =
+  "Operação bloqueada temporariamente (HTTP 409): o módulo de pendências opera em modo somente leitura porque não há mecanismo transacional atômico disponível entre public.pendencias e public.pendencias_historico.";
+
+const PENDENCIA_UUID_REGEX =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+const PENDENCIA_ID_FIELDS = new Set([
+  "id",
+  "pendencia_id",
+  "responsavel_id",
+  "direcionado_por",
+  "criado_por",
+  "resolvido_por",
+  "usuario_id",
+  "empreendedor_id",
+  "barragem_id",
+  "referencia_id",
+  "origem_ref_id",
 ]);
 
 const PENDENCIA_EDITABLE_FIELDS = [
@@ -2108,6 +2136,38 @@ const PENDENCIA_EDITABLE_FIELDS = [
   "barragem_id",
   "origem_ref_id",
 ] as const;
+
+const PENDENCIA_FORBIDDEN_PAYLOAD_KEYS = new Set([
+  "dados_legados",
+  "dadosLegados",
+  "payload",
+  "raw",
+  "raw_payload",
+  "rawPayload",
+  "snapshot",
+  "documento",
+  "document",
+  "parecer",
+  "oficio",
+  "notificacao",
+  "registro",
+  "historico",
+  "metadata",
+  "meta",
+  "cpf",
+  "cnpj",
+  "cpf_cnpj",
+  "cpfCnpj",
+  "cpf_cnpj_normalizado",
+  "cpfCnpjNormalizado",
+]);
+
+const EMAIL_IN_TEXT_REGEX = /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/g;
+
+export function isValidPendenciaUuid(value: unknown): boolean {
+  if (typeof value !== "string") return false;
+  return PENDENCIA_UUID_REGEX.test(value.trim());
+}
 
 function sanitizePendenciaText(val: unknown): string {
   if (typeof val !== "string") return "";
@@ -2124,235 +2184,233 @@ function optionalCleanPendenciaText(val: unknown): string | null {
   return clean ? clean : null;
 }
 
-function isSameSessionUser(candidateId: unknown, authUser: AuthenticatedUser): boolean {
+function maskEmailsInText(text: string): string {
+  return text.replace(EMAIL_IN_TEXT_REGEX, "***@***");
+}
+
+function maskPendenciaTextValue(
+  text: string,
+  options: { maskEmails: boolean }
+): string {
+  const uuidPlaceholders: string[] = [];
+  let protectedText = text.replace(
+    /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi,
+    (match) => {
+      const token = `[[UUID_${uuidPlaceholders.length}]]`;
+      uuidPlaceholders.push(match);
+      return token;
+    }
+  );
+  protectedText = maskEmbeddedCpfCnpjInText(protectedText);
+  if (options.maskEmails) {
+    protectedText = maskEmailsInText(protectedText);
+  }
+  return protectedText.replace(
+    /\[\[UUID_(\d+)\]\]/g,
+    (_m, idx) => uuidPlaceholders[Number(idx)] ?? ""
+  );
+}
+
+function containsCpfCnpjInText(text: string): boolean {
+  if (!text) return false;
+  const withoutUuids = text.replace(
+    /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi,
+    " "
+  );
+  return maskEmbeddedCpfCnpjInText(withoutUuids) !== withoutUuids;
+}
+
+function looksLikeSerializedObjectPayload(text: string): boolean {
+  const trimmed = text.trim();
+  if (
+    !(
+      (trimmed.startsWith("{") && trimmed.endsWith("}")) ||
+      (trimmed.startsWith("[") && trimmed.endsWith("]"))
+    )
+  ) {
+    return false;
+  }
+  try {
+    const parsed = JSON.parse(trimmed);
+    return Boolean(parsed && typeof parsed === "object");
+  } catch {
+    return false;
+  }
+}
+
+export function canReadPendencias(authUser: AuthenticatedUser | null | undefined): boolean {
+  if (!authUser) return false;
+  return PENDENCIA_READ_ROLES.has(authUser.perfil);
+}
+
+export function canReadPendencia(
+  pendencia: Record<string, any> | null | undefined,
+  authUser: AuthenticatedUser | null | undefined
+): boolean {
+  if (!pendencia || !canReadPendencias(authUser)) return false;
+  return true;
+}
+
+export function isSameSessionCanonicalUser(
+  candidateId: unknown,
+  authUser: AuthenticatedUser | null | undefined
+): boolean {
+  if (!authUser) return false;
   const candidate = String(candidateId || "").trim();
-  if (!candidate) return false;
-  if (candidate === authUser.id) return true;
-  if (authUser.perfilId && candidate === authUser.perfilId) return true;
-  return false;
+  const canonicalId = String(authUser.id || "").trim();
+  return Boolean(candidate && canonicalId && candidate === canonicalId);
 }
 
-function maskPendenciaRow<T extends Record<string, any>>(row: T): T {
-  return {
+export function maskPendenciaRow<T extends Record<string, any>>(
+  row: T,
+  options: { isAdmin?: boolean } = {}
+): T {
+  const maskEmails = !options.isAdmin;
+  const masked: Record<string, any> = {
     ...row,
-    titulo: typeof row.titulo === "string" ? maskEmbeddedCpfCnpjInText(row.titulo) : row.titulo,
-    descricao: typeof row.descricao === "string" ? maskEmbeddedCpfCnpjInText(row.descricao) : row.descricao,
+    titulo:
+      typeof row.titulo === "string"
+        ? maskPendenciaTextValue(row.titulo, { maskEmails })
+        : row.titulo,
+    descricao:
+      typeof row.descricao === "string"
+        ? maskPendenciaTextValue(row.descricao, { maskEmails })
+        : row.descricao,
+    tipo:
+      typeof row.tipo === "string"
+        ? maskPendenciaTextValue(row.tipo, { maskEmails })
+        : row.tipo,
+    tipo_referencia:
+      typeof row.tipo_referencia === "string"
+        ? maskPendenciaTextValue(row.tipo_referencia, { maskEmails })
+        : row.tipo_referencia,
   };
+  if (maskEmails) {
+    delete masked.email;
+    delete masked.criado_por_email;
+    delete masked.responsavel_email;
+  }
+  return masked as T;
 }
 
-function maskPendenciaHistoricoRow<T extends Record<string, any>>(row: T): T {
-  const isIdField = row.campo === "responsavel_id" || row.campo === "empreendedor_id" || row.campo === "barragem_id" || row.campo === "referencia_id" || row.campo === "origem_ref_id";
-  return {
+export function maskPendenciaHistoricoRow<T extends Record<string, any>>(
+  row: T,
+  options: { isAdmin?: boolean } = {}
+): T {
+  const maskEmails = !options.isAdmin;
+  const isIdField =
+    typeof row.campo === "string" && PENDENCIA_ID_FIELDS.has(row.campo);
+  const masked: Record<string, any> = {
     ...row,
     valor_anterior:
       !isIdField && typeof row.valor_anterior === "string"
-        ? maskEmbeddedCpfCnpjInText(row.valor_anterior)
+        ? maskPendenciaTextValue(row.valor_anterior, { maskEmails })
         : row.valor_anterior,
     valor_novo:
       !isIdField && typeof row.valor_novo === "string"
-        ? maskEmbeddedCpfCnpjInText(row.valor_novo)
+        ? maskPendenciaTextValue(row.valor_novo, { maskEmails })
         : row.valor_novo,
-    motivo: typeof row.motivo === "string" ? maskEmbeddedCpfCnpjInText(row.motivo) : row.motivo,
+    motivo:
+      typeof row.motivo === "string"
+        ? maskPendenciaTextValue(row.motivo, { maskEmails })
+        : row.motivo,
   };
+  if (maskEmails) {
+    delete masked.email;
+    delete masked.usuario_email;
+  }
+  return masked as T;
 }
 
-async function fetchActiveNotificaUsers(cfg: RemoteServiceConfig) {
-  const res = await remoteRestRequest<Array<{
-    id?: string;
-    email?: string;
-    nome?: string;
-    perfil?: string;
-    status?: string;
-  }>>(cfg, "perfis_usuarios", {
-    query: "select=id,email,nome,perfil,status&order=nome.asc&limit=500",
-  });
-  if (!res.ok || !Array.isArray(res.data)) {
-    return { ok: false, users: [] as Array<{ id: string; email: string; nome: string; perfil: UserRole }> };
+export function validatePendenciaMutationInput(
+  rawBody: unknown
+): { ok: boolean; body?: Record<string, any>; error?: string } {
+  if (!rawBody || typeof rawBody !== "object" || Array.isArray(rawBody)) {
+    return { ok: false, error: "Corpo da requisição inválido para pendência." };
   }
-  const users = res.data
-    .filter((u) => String(u.status || "").trim().toLowerCase() === "ativo")
-    .map((u) => {
-      const perfil = normalizeUserRole(u.perfil);
-      const id = String(u.id || "").trim();
-      if (!perfil || !id) return null;
+  const body = rawBody as Record<string, any>;
+
+  for (const [key, value] of Object.entries(body)) {
+    if (
+      PENDENCIA_FORBIDDEN_PAYLOAD_KEYS.has(key) &&
+      value !== undefined &&
+      value !== null &&
+      String(value).trim() !== ""
+    ) {
       return {
-        id,
-        email: String(u.email || "").trim().toLowerCase(),
-        nome: String(u.nome || u.email || id).trim(),
-        perfil,
+        ok: false,
+        error:
+          "CPF/CNPJ e payloads copiados não são permitidos em pendências ou histórico; utilize apenas referências por ID.",
       };
-    })
-    .filter((u): u is { id: string; email: string; nome: string; perfil: UserRole } => Boolean(u));
+    }
 
-  return { ok: true, users };
+    if (value !== null && value !== undefined && typeof value === "object") {
+      return {
+        ok: false,
+        error:
+          "Payloads aninhados ou copiados não são permitidos; envie apenas campos simples e IDs de referência.",
+      };
+    }
+
+    if (typeof value === "string" && !PENDENCIA_ID_FIELDS.has(key)) {
+      if (looksLikeSerializedObjectPayload(value)) {
+        return {
+          ok: false,
+          error:
+            "Payloads JSON copiados não são permitidos em campos de pendência ou histórico.",
+        };
+      }
+      if (containsCpfCnpjInText(value)) {
+        return {
+          ok: false,
+          error:
+            "CPF/CNPJ não pode ser gravado em pendências ou histórico; utilize apenas referências por ID.",
+        };
+      }
+    }
+  }
+
+  return { ok: true, body };
 }
 
-app.get("/api/pendencias", async (req, res) => {
-  const authUser = getSessionIdentity(req);
-  if (!authUser) {
-    return res.status(401).json({ error: "Usuário não autenticado." });
-  }
-  const cfg = getServiceConfig("NOTIFICA");
-  if (!cfg) {
-    return res.status(503).json({ error: "Persistência remota do Notifica não configurada no servidor." });
-  }
-
-  const [pendRes, usersRes] = await Promise.all([
-    remoteRestRequest<Record<string, any>[]>(cfg, "pendencias", {
-      query: "select=*&order=updated_at.desc,created_at.desc&limit=1000",
-    }),
-    fetchActiveNotificaUsers(cfg),
-  ]);
-
-  if (!pendRes.ok || !Array.isArray(pendRes.data)) {
-    return res.status(502).json({ error: "Falha ao carregar pendências no servidor." });
-  }
-
-  const isAdmin = authUser.perfil === "Administrador";
-  const includeFullDoc = canViewFullDocument(req);
-  const items = includeFullDoc ? pendRes.data : pendRes.data.map((row) => maskPendenciaRow(row));
-  const usuarios = usersRes.ok
-    ? usersRes.users.map((u) => ({
-        id: u.id,
-        nome: u.nome,
-        perfil: u.perfil,
-        ...(isAdmin ? { email: u.email } : {}),
-      }))
-    : [];
-
-  return res.json({
-    items,
-    usuarios,
-    currentUser: {
-      id: authUser.id,
-      perfilId: authUser.perfilId || authUser.id,
-      nome: authUser.nome,
-      perfil: authUser.perfil,
-    },
-  });
-});
-
-app.get("/api/pendencias/:id/historico", async (req, res) => {
-  const authUser = getSessionIdentity(req);
-  if (!authUser) {
-    return res.status(401).json({ error: "Usuário não autenticado." });
-  }
-  const id = String(req.params.id || "").trim();
-  if (!id) {
-    return res.status(400).json({ error: "ID da pendência inválido." });
-  }
-  const cfg = getServiceConfig("NOTIFICA");
-  if (!cfg) {
-    return res.status(503).json({ error: "Persistência remota do Notifica não configurada no servidor." });
-  }
-
-  const [pendCheck, histRes] = await Promise.all([
-    remoteRestRequest<Record<string, any>[]>(cfg, "pendencias", {
-      query: `select=id&id=eq.${encodeURIComponent(id)}&limit=1`,
-    }),
-    remoteRestRequest<Record<string, any>[]>(cfg, "pendencias_historico", {
-      query: `select=*&pendencia_id=eq.${encodeURIComponent(id)}&order=created_at.desc&limit=500`,
-    }),
-  ]);
-
-  if (!pendCheck.ok || !Array.isArray(pendCheck.data)) {
-    return res.status(502).json({ error: "Falha ao consultar pendência." });
-  }
-  if (pendCheck.data.length === 0) {
-    return res.status(404).json({ error: "Pendência não encontrada." });
-  }
-  if (!histRes.ok || !Array.isArray(histRes.data)) {
-    return res.status(502).json({ error: "Falha ao carregar histórico da pendência." });
-  }
-
-  const includeFullDoc = canViewFullDocument(req);
-  const items = includeFullDoc ? histRes.data : histRes.data.map((row) => maskPendenciaHistoricoRow(row));
-  return res.json({ items });
-});
-
-app.post("/api/pendencias", requireRole(["Administrador", "Analista"]), async (req, res) => {
-  const authUser = getSessionIdentity(req);
-  if (!authUser) {
-    return res.status(401).json({ error: "Usuário não autenticado." });
-  }
-  const cfg = getServiceConfig("NOTIFICA");
-  if (!cfg) {
-    return res.status(503).json({ error: "Persistência remota do Notifica não configurada no servidor." });
-  }
-
-  const body = req.body || {};
-  const titulo = sanitizePendenciaText(body.titulo);
-  if (!titulo) {
-    return res.status(400).json({ error: "Informe o título da pendência." });
-  }
-
-  const isAdmin = authUser.perfil === "Administrador";
-  const requestedRespId = optionalCleanPendenciaText(body.responsavel_id);
-  if (requestedRespId && !isAdmin) {
-    return res.status(403).json({ error: "Apenas Administrador pode definir ou alterar o responsável." });
-  }
-
-  if (requestedRespId) {
-    const usersRes = await fetchActiveNotificaUsers(cfg);
-    if (!usersRes.ok) {
-      return res.status(502).json({ error: "Não foi possível validar o usuário responsável." });
-    }
-    const targetExists = usersRes.users.some((u) => u.id === requestedRespId);
-    if (!targetExists) {
-      return res.status(400).json({ error: "Responsável selecionado não existe ou está inativo." });
-    }
-  }
-
-  const rawSituacao = optionalCleanPendenciaText(body.situacao);
-  if (rawSituacao && !PENDENCIA_SITUACOES.has(rawSituacao)) {
-    return res.status(400).json({ error: "Situação inválida para a pendência." });
-  }
-  if (!isAdmin && rawSituacao === "direcionada") {
-    return res.status(403).json({ error: "Apenas Administrador pode direcionar pendências." });
-  }
-
+export function buildPendenciaCreatePayload(
+  rawBody: Record<string, any>,
+  authUser: AuthenticatedUser,
+  now = new Date().toISOString()
+) {
+  const titulo = sanitizePendenciaText(rawBody.titulo);
+  const requestedRespId = optionalCleanPendenciaText(rawBody.responsavel_id);
+  const rawSituacao = optionalCleanPendenciaText(rawBody.situacao);
   const situacao = rawSituacao || (requestedRespId ? "direcionada" : "aberta");
-  const now = new Date().toISOString();
   const pendenciaId = crypto.randomUUID();
-  const motivo = optionalCleanPendenciaText(body.motivo);
+  const motivo = optionalCleanPendenciaText(rawBody.motivo);
 
-  const newRow = {
+  const row = {
     id: pendenciaId,
-    origem: "NOTIFICA",
-    origem_ref_id: optionalCleanPendenciaText(body.origem_ref_id),
-    tipo: sanitizePendenciaText(body.tipo) || "Geral",
+    origem: PENDENCIA_ORIGEM,
+    origem_ref_id: optionalCleanPendenciaText(rawBody.origem_ref_id),
+    tipo: sanitizePendenciaText(rawBody.tipo) || "Geral",
     titulo,
-    descricao: optionalCleanPendenciaText(body.descricao),
+    descricao: optionalCleanPendenciaText(rawBody.descricao),
     situacao,
     responsavel_id: requestedRespId,
     direcionado_por: requestedRespId ? authUser.id : null,
     direcionado_em: requestedRespId ? now : null,
     criado_por: authUser.id,
-    tipo_referencia: optionalCleanPendenciaText(body.tipo_referencia),
-    referencia_id: optionalCleanPendenciaText(body.referencia_id),
-    empreendedor_id: optionalCleanPendenciaText(body.empreendedor_id),
-    barragem_id: optionalCleanPendenciaText(body.barragem_id),
+    tipo_referencia: optionalCleanPendenciaText(rawBody.tipo_referencia),
+    referencia_id: optionalCleanPendenciaText(rawBody.referencia_id),
+    empreendedor_id: optionalCleanPendenciaText(rawBody.empreendedor_id),
+    barragem_id: optionalCleanPendenciaText(rawBody.barragem_id),
     resolvido_por: situacao === "resolvida" ? authUser.id : null,
     resolvido_em: situacao === "resolvida" ? now : null,
     created_at: now,
     updated_at: now,
   };
 
-  const insertRes = await remoteRestRequest<Record<string, any>[]>(cfg, "pendencias", {
-    method: "POST",
-    prefer: "return=representation",
-    body: newRow,
-  });
-
-  if (!insertRes.ok || !Array.isArray(insertRes.data) || !insertRes.data[0]) {
-    return res.status(502).json({ error: "Falha ao registrar pendência no banco remoto." });
-  }
-
-  const created = insertRes.data[0];
   const historyRows: Record<string, any>[] = [
     {
       id: crypto.randomUUID(),
-      pendencia_id: created.id,
+      pendencia_id: pendenciaId,
       acao: "criacao",
       campo: "situacao",
       valor_anterior: null,
@@ -2366,7 +2424,7 @@ app.post("/api/pendencias", requireRole(["Administrador", "Analista"]), async (r
   if (requestedRespId) {
     historyRows.push({
       id: crypto.randomUUID(),
-      pendencia_id: created.id,
+      pendencia_id: pendenciaId,
       acao: "direcionamento",
       campo: "responsavel_id",
       valor_anterior: null,
@@ -2380,7 +2438,7 @@ app.post("/api/pendencias", requireRole(["Administrador", "Analista"]), async (r
   if (situacao === "resolvida") {
     historyRows.push({
       id: crypto.randomUUID(),
-      pendencia_id: created.id,
+      pendencia_id: pendenciaId,
       acao: "resolucao",
       campo: "situacao",
       valor_anterior: null,
@@ -2391,102 +2449,39 @@ app.post("/api/pendencias", requireRole(["Administrador", "Analista"]), async (r
     });
   }
 
-  const histRes = await remoteRestRequest(cfg, "pendencias_historico", {
-    method: "POST",
-    prefer: "return=representation",
-    body: historyRows,
-  });
+  return { row, historyRows };
+}
 
-  if (!histRes.ok) {
-    return res.status(502).json({ error: "Pendência criada, mas houve falha ao registrar o histórico obrigatório." });
-  }
-
-  return res.status(201).json({ item: created });
-});
-
-app.patch("/api/pendencias/:id", requireRole(["Administrador", "Analista"]), async (req, res) => {
-  const authUser = getSessionIdentity(req);
-  if (!authUser) {
-    return res.status(401).json({ error: "Usuário não autenticado." });
-  }
-  const id = String(req.params.id || "").trim();
-  if (!id) {
-    return res.status(400).json({ error: "ID da pendência inválido." });
-  }
-  const cfg = getServiceConfig("NOTIFICA");
-  if (!cfg) {
-    return res.status(503).json({ error: "Persistência remota do Notifica não configurada no servidor." });
-  }
-
-  const existingRes = await remoteRestRequest<Record<string, any>[]>(cfg, "pendencias", {
-    query: `select=*&id=eq.${encodeURIComponent(id)}&limit=1`,
-  });
-  if (!existingRes.ok || !Array.isArray(existingRes.data)) {
-    return res.status(502).json({ error: "Falha ao consultar pendência para atualização." });
-  }
-  const existing = existingRes.data[0];
-  if (!existing) {
-    return res.status(404).json({ error: "Pendência não encontrada." });
-  }
-
-  const body = req.body || {};
-  const isAdmin = authUser.perfil === "Administrador";
-  const hasRespField = Object.prototype.hasOwnProperty.call(body, "responsavel_id");
+export function buildPendenciaPatchPlan(
+  existing: Record<string, any>,
+  rawBody: Record<string, any>,
+  authUser: AuthenticatedUser,
+  now = new Date().toISOString()
+) {
+  const id = String(existing.id || "").trim();
+  const hasRespField = Object.prototype.hasOwnProperty.call(rawBody, "responsavel_id");
   const existingRespId = optionalCleanPendenciaText(existing.responsavel_id);
-  const nextRespId = hasRespField ? optionalCleanPendenciaText(body.responsavel_id) : existingRespId;
+  const nextRespId = hasRespField
+    ? optionalCleanPendenciaText(rawBody.responsavel_id)
+    : existingRespId;
   const respChanged = hasRespField && nextRespId !== existingRespId;
 
-  if (respChanged && !isAdmin) {
-    return res.status(403).json({ error: "Usuários não administradores não podem escolher ou alterar o responsável." });
-  }
+  const hasSituacaoField = Object.prototype.hasOwnProperty.call(rawBody, "situacao");
+  const requestedSituacao = hasSituacaoField
+    ? optionalCleanPendenciaText(rawBody.situacao)
+    : null;
 
-  if (!isAdmin) {
-    if (existingRespId && !isSameSessionUser(existingRespId, authUser)) {
-      return res.status(403).json({ error: "Você não tem permissão para alterar ou resolver pendência atribuída a outro usuário." });
-    }
-    const requestedStatusNonAdmin = Object.prototype.hasOwnProperty.call(body, "situacao")
-      ? optionalCleanPendenciaText(body.situacao)
-      : null;
-    if (requestedStatusNonAdmin === "direcionada" && existing.situacao !== "direcionada") {
-      return res.status(403).json({ error: "Apenas Administrador pode definir a situação como direcionada." });
-    }
-  }
-
-  if (respChanged && nextRespId) {
-    const usersRes = await fetchActiveNotificaUsers(cfg);
-    if (!usersRes.ok) {
-      return res.status(502).json({ error: "Não foi possível validar o responsável selecionado." });
-    }
-    const targetExists = usersRes.users.some((u) => u.id === nextRespId);
-    if (!targetExists) {
-      return res.status(400).json({ error: "Responsável selecionado não existe ou está inativo." });
-    }
-  }
-
-  const hasSituacaoField = Object.prototype.hasOwnProperty.call(body, "situacao");
-  const requestedSituacao = hasSituacaoField ? optionalCleanPendenciaText(body.situacao) : null;
-  if (hasSituacaoField && (!requestedSituacao || !PENDENCIA_SITUACOES.has(requestedSituacao))) {
-    return res.status(400).json({ error: "Situação inválida para a pendência." });
-  }
-
-  const now = new Date().toISOString();
-  const motivo = optionalCleanPendenciaText(body.motivo);
+  const motivo = optionalCleanPendenciaText(rawBody.motivo);
   const patchPayload: Record<string, any> = {};
   const historyRows: Record<string, any>[] = [];
 
   for (const field of PENDENCIA_EDITABLE_FIELDS) {
-    if (!Object.prototype.hasOwnProperty.call(body, field)) continue;
+    if (!Object.prototype.hasOwnProperty.call(rawBody, field)) continue;
     const prevVal = optionalCleanPendenciaText(existing[field]);
-    const nextVal = field === "titulo" || field === "tipo"
-      ? sanitizePendenciaText(body[field])
-      : optionalCleanPendenciaText(body[field]);
-
-    if (field === "titulo" && !nextVal) {
-      return res.status(400).json({ error: "O título da pendência não pode ficar vazio." });
-    }
-    if (field === "tipo" && !nextVal) {
-      return res.status(400).json({ error: "O tipo da pendência não pode ficar vazio." });
-    }
+    const nextVal =
+      field === "titulo" || field === "tipo"
+        ? sanitizePendenciaText(rawBody[field])
+        : optionalCleanPendenciaText(rawBody[field]);
 
     if ((prevVal ?? null) !== (nextVal ?? null)) {
       patchPayload[field] = nextVal || null;
@@ -2565,38 +2560,319 @@ app.patch("/api/pendencias/:id", requireRole(["Administrador", "Analista"]), asy
     }
   }
 
-  if (Object.keys(patchPayload).length === 0) {
-    return res.json({ item: existing, unchanged: true });
+  if (Object.keys(patchPayload).length > 0) {
+    patchPayload.updated_at = now;
   }
 
-  patchPayload.updated_at = now;
+  return { patchPayload, historyRows };
+}
 
-  const updateRes = await remoteRestRequest<Record<string, any>[]>(cfg, "pendencias", {
-    method: "PATCH",
-    query: `id=eq.${encodeURIComponent(id)}`,
-    prefer: "return=representation",
-    body: patchPayload,
+async function fetchActiveNotificaUsers(cfg: RemoteServiceConfig) {
+  const res = await remoteRestRequest<Array<{
+    id?: string;
+    email?: string;
+    nome?: string;
+    perfil?: string;
+    status?: string;
+  }>>(cfg, "perfis_usuarios", {
+    query: "select=id,email,nome,perfil,status&order=nome.asc&limit=500",
+  });
+  if (!res.ok || !Array.isArray(res.data)) {
+    return {
+      ok: false,
+      users: [] as Array<{ id: string; email: string; nome: string; perfil: UserRole }>,
+    };
+  }
+  const users = res.data
+    .filter((u) => String(u.status || "").trim().toLowerCase() === "ativo")
+    .map((u) => {
+      const perfil = normalizeUserRole(u.perfil);
+      const id = String(u.id || "").trim();
+      if (!perfil || !id) return null;
+      return {
+        id,
+        email: String(u.email || "").trim().toLowerCase(),
+        nome: String(u.nome || "").trim(),
+        perfil,
+      };
+    })
+    .filter((u): u is { id: string; email: string; nome: string; perfil: UserRole } =>
+      Boolean(u)
+    );
+
+  return { ok: true, users };
+}
+
+function formatSafeUsuarioNome(
+  user: { id: string; nome: string; email: string },
+  isAdmin: boolean
+): string {
+  if (isAdmin) {
+    return user.nome || user.email || user.id;
+  }
+  const cleanNome = maskEmailsInText(user.nome || "").trim();
+  if (!cleanNome || cleanNome === "***@***") {
+    return `Usuário ${user.id.slice(0, 8)}`;
+  }
+  return cleanNome;
+}
+
+app.get("/api/pendencias", async (req, res) => {
+  const authUser = getSessionIdentity(req);
+  if (!authUser) {
+    return res.status(401).json({ error: "Usuário não autenticado." });
+  }
+  if (!canReadPendencias(authUser)) {
+    return res.status(403).json({ error: "Perfil sem permissão para consultar pendências." });
+  }
+  const cfg = getServiceConfig("NOTIFICA");
+  if (!cfg) {
+    return res
+      .status(503)
+      .json({ error: "Persistência remota do Notifica não configurada no servidor." });
+  }
+
+  const [pendRes, usersRes] = await Promise.all([
+    remoteRestRequest<Record<string, any>[]>(cfg, "pendencias", {
+      query: "select=*&order=updated_at.desc,created_at.desc&limit=1000",
+    }),
+    fetchActiveNotificaUsers(cfg),
+  ]);
+
+  if (!pendRes.ok || !Array.isArray(pendRes.data)) {
+    return res.status(502).json({ error: "Falha ao carregar pendências no servidor." });
+  }
+
+  const isAdmin = authUser.perfil === "Administrador";
+  const items = pendRes.data
+    .filter((row) => canReadPendencia(row, authUser))
+    .map((row) => maskPendenciaRow(row, { isAdmin }));
+
+  const usuarios = usersRes.ok
+    ? usersRes.users.map((u) => ({
+        id: u.id,
+        nome: formatSafeUsuarioNome(u, isAdmin),
+        perfil: u.perfil,
+        ...(isAdmin ? { email: u.email } : {}),
+      }))
+    : [];
+
+  return res.json({
+    items,
+    usuarios,
+    currentUser: {
+      id: authUser.id,
+      nome: isAdmin
+        ? authUser.nome
+        : maskEmailsInText(authUser.nome || "").trim() || `Usuário ${authUser.id.slice(0, 8)}`,
+      perfil: authUser.perfil,
+    },
+    readOnly: true,
+    readOnlyReason: PENDENCIA_MUTATION_BLOCKED_MESSAGE,
+  });
+});
+
+app.get("/api/pendencias/:id/historico", async (req, res) => {
+  const authUser = getSessionIdentity(req);
+  if (!authUser) {
+    return res.status(401).json({ error: "Usuário não autenticado." });
+  }
+  if (!canReadPendencias(authUser)) {
+    return res.status(403).json({ error: "Perfil sem permissão para consultar histórico de pendências." });
+  }
+  const id = String(req.params.id || "").trim();
+  if (!isValidPendenciaUuid(id)) {
+    return res.status(400).json({ error: "ID da pendência inválido. Informe um UUID válido." });
+  }
+  const cfg = getServiceConfig("NOTIFICA");
+  if (!cfg) {
+    return res
+      .status(503)
+      .json({ error: "Persistência remota do Notifica não configurada no servidor." });
+  }
+
+  // Valida existência e permissão de leitura da pendência ANTES de consultar o histórico
+  const pendCheck = await remoteRestRequest<Record<string, any>[]>(cfg, "pendencias", {
+    query: `select=*&id=eq.${encodeURIComponent(id)}&limit=1`,
   });
 
-  if (!updateRes.ok || !Array.isArray(updateRes.data) || !updateRes.data[0]) {
-    return res.status(502).json({ error: "Falha ao atualizar pendência no banco remoto." });
+  if (!pendCheck.ok || !Array.isArray(pendCheck.data)) {
+    return res.status(502).json({ error: "Falha ao consultar pendência." });
+  }
+  if (pendCheck.data.length === 0) {
+    return res.status(404).json({ error: "Pendência não encontrada." });
+  }
+  const pendencia = pendCheck.data[0];
+  if (!canReadPendencia(pendencia, authUser)) {
+    return res.status(403).json({ error: "Você não tem permissão para acessar o histórico desta pendência." });
   }
 
-  if (historyRows.length > 0) {
-    const histRes = await remoteRestRequest(cfg, "pendencias_historico", {
-      method: "POST",
-      prefer: "return=representation",
-      body: historyRows,
-    });
-    if (!histRes.ok) {
-      return res.status(502).json({ error: "Pendência atualizada, mas houve falha ao registrar o histórico obrigatório." });
+  const histRes = await remoteRestRequest<Record<string, any>[]>(cfg, "pendencias_historico", {
+    query: `select=*&pendencia_id=eq.${encodeURIComponent(id)}&order=created_at.desc&limit=500`,
+  });
+  if (!histRes.ok || !Array.isArray(histRes.data)) {
+    return res.status(502).json({ error: "Falha ao carregar histórico da pendência." });
+  }
+
+  const isAdmin = authUser.perfil === "Administrador";
+  const items = histRes.data.map((row) => maskPendenciaHistoricoRow(row, { isAdmin }));
+  return res.json({ items });
+});
+
+app.post("/api/pendencias", requireRole(["Administrador", "Analista"]), async (req, res) => {
+  const authUser = getSessionIdentity(req);
+  if (!authUser) {
+    return res.status(401).json({ error: "Usuário não autenticado." });
+  }
+
+  const validation = validatePendenciaMutationInput(req.body);
+  if (!validation.ok || !validation.body) {
+    return res.status(400).json({ error: validation.error || "Corpo da requisição inválido." });
+  }
+  const body = validation.body;
+
+  const titulo = sanitizePendenciaText(body.titulo);
+  if (!titulo) {
+    return res.status(400).json({ error: "Informe o título da pendência." });
+  }
+
+  const isAdmin = authUser.perfil === "Administrador";
+  const requestedRespId = optionalCleanPendenciaText(body.responsavel_id);
+  if (requestedRespId && !isAdmin) {
+    return res.status(403).json({ error: "Apenas Administrador pode definir ou alterar o responsável." });
+  }
+  if (requestedRespId && !isValidPendenciaUuid(requestedRespId)) {
+    return res.status(400).json({ error: "ID do responsável inválido. Informe um UUID válido." });
+  }
+
+  const rawSituacao = optionalCleanPendenciaText(body.situacao);
+  if (rawSituacao && !PENDENCIA_SITUACOES.has(rawSituacao)) {
+    return res.status(400).json({ error: "Situação inválida para a pendência." });
+  }
+  if (!isAdmin && rawSituacao === "direcionada") {
+    return res.status(403).json({ error: "Apenas Administrador pode direcionar pendências." });
+  }
+
+  const cfg = getServiceConfig("NOTIFICA");
+  if (requestedRespId && cfg) {
+    const usersRes = await fetchActiveNotificaUsers(cfg);
+    if (!usersRes.ok) {
+      return res.status(502).json({ error: "Não foi possível validar o usuário responsável." });
+    }
+    const targetExists = usersRes.users.some((u) => u.id === requestedRespId);
+    if (!targetExists) {
+      return res.status(400).json({ error: "Responsável selecionado não existe ou está inativo." });
     }
   }
 
-  return res.json({ item: updateRes.data[0] });
+  // Bloqueio explícito antes de qualquer gravação enquanto não houver transação atômica
+  buildPendenciaCreatePayload(body, authUser);
+  return res.status(409).json({
+    error: PENDENCIA_MUTATION_BLOCKED_MESSAGE,
+    readOnly: true,
+    code: "ATOMIC_TRANSACTION_REQUIRED",
+  });
+});
+
+app.patch("/api/pendencias/:id", requireRole(["Administrador", "Analista"]), async (req, res) => {
+  const authUser = getSessionIdentity(req);
+  if (!authUser) {
+    return res.status(401).json({ error: "Usuário não autenticado." });
+  }
+  const id = String(req.params.id || "").trim();
+  if (!isValidPendenciaUuid(id)) {
+    return res.status(400).json({ error: "ID da pendência inválido. Informe um UUID válido." });
+  }
+
+  const validation = validatePendenciaMutationInput(req.body);
+  if (!validation.ok || !validation.body) {
+    return res.status(400).json({ error: validation.error || "Corpo da requisição inválido." });
+  }
+  const body = validation.body;
+
+  const hasSituacaoField = Object.prototype.hasOwnProperty.call(body, "situacao");
+  const requestedSituacao = hasSituacaoField ? optionalCleanPendenciaText(body.situacao) : null;
+  if (hasSituacaoField && (!requestedSituacao || !PENDENCIA_SITUACOES.has(requestedSituacao))) {
+    return res.status(400).json({ error: "Situação inválida para a pendência." });
+  }
+
+  const hasRespField = Object.prototype.hasOwnProperty.call(body, "responsavel_id");
+  const requestedRespId = hasRespField ? optionalCleanPendenciaText(body.responsavel_id) : null;
+  if (requestedRespId && !isValidPendenciaUuid(requestedRespId)) {
+    return res.status(400).json({ error: "ID do responsável inválido. Informe um UUID válido." });
+  }
+
+  if (Object.prototype.hasOwnProperty.call(body, "titulo") && !sanitizePendenciaText(body.titulo)) {
+    return res.status(400).json({ error: "O título da pendência não pode ficar vazio." });
+  }
+  if (Object.prototype.hasOwnProperty.call(body, "tipo") && !sanitizePendenciaText(body.tipo)) {
+    return res.status(400).json({ error: "O tipo da pendência não pode ficar vazio." });
+  }
+
+  const cfg = getServiceConfig("NOTIFICA");
+  if (!cfg) {
+    return res
+      .status(503)
+      .json({ error: "Persistência remota do Notifica não configurada no servidor." });
+  }
+
+  const existingRes = await remoteRestRequest<Record<string, any>[]>(cfg, "pendencias", {
+    query: `select=*&id=eq.${encodeURIComponent(id)}&limit=1`,
+  });
+  if (!existingRes.ok || !Array.isArray(existingRes.data)) {
+    return res.status(502).json({ error: "Falha ao consultar pendência para atualização." });
+  }
+  const existing = existingRes.data[0];
+  if (!existing) {
+    return res.status(404).json({ error: "Pendência não encontrada." });
+  }
+
+  const isAdmin = authUser.perfil === "Administrador";
+  const existingRespId = optionalCleanPendenciaText(existing.responsavel_id);
+  const nextRespId = hasRespField ? requestedRespId : existingRespId;
+  const respChanged = hasRespField && nextRespId !== existingRespId;
+
+  if (respChanged && !isAdmin) {
+    return res.status(403).json({
+      error: "Usuários não administradores não podem escolher ou alterar o responsável.",
+    });
+  }
+
+  if (!isAdmin) {
+    if (existingRespId && !isSameSessionCanonicalUser(existingRespId, authUser)) {
+      return res.status(403).json({
+        error: "Você não tem permissão para alterar ou resolver pendência atribuída a outro usuário.",
+      });
+    }
+    if (requestedSituacao === "direcionada" && existing.situacao !== "direcionada") {
+      return res.status(403).json({
+        error: "Apenas Administrador pode definir a situação como direcionada.",
+      });
+    }
+  }
+
+  if (respChanged && nextRespId) {
+    const usersRes = await fetchActiveNotificaUsers(cfg);
+    if (!usersRes.ok) {
+      return res.status(502).json({ error: "Não foi possível validar o responsável selecionado." });
+    }
+    const targetExists = usersRes.users.some((u) => u.id === nextRespId);
+    if (!targetExists) {
+      return res.status(400).json({ error: "Responsável selecionado não existe ou está inativo." });
+    }
+  }
+
+  // Bloqueio explícito antes de qualquer gravação enquanto não houver transação atômica
+  buildPendenciaPatchPlan(existing, body, authUser);
+  return res.status(409).json({
+    error: PENDENCIA_MUTATION_BLOCKED_MESSAGE,
+    readOnly: true,
+    code: "ATOMIC_TRANSACTION_REQUIRED",
+  });
 });
 
 const isProduction = process.env.NODE_ENV === "production" || Boolean(process.env.VERCEL);
+const isTestEnv = process.env.NODE_ENV === "test";
 
 async function startDevServer() {
   const { createServer: createViteServer } = await import("vite");
@@ -2611,7 +2887,7 @@ async function startDevServer() {
   });
 }
 
-if (!isProduction) {
+if (!isProduction && !isTestEnv) {
   void startDevServer();
 }
 
