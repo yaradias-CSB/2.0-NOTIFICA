@@ -16,6 +16,7 @@ interface MockAuthUser {
   id: string;
   email: string;
   password: string;
+  app_metadata: Record<string, any>;
   user_metadata: Record<string, any>;
   banned_until?: string | null;
 }
@@ -39,6 +40,7 @@ function resetMockDb() {
       id: ADMIN_ID,
       email: "admin@sema.mt.gov.br",
       password: "admin-old-password",
+      app_metadata: {},
       user_metadata: { nome: "Admin Principal" },
       banned_until: null,
     },
@@ -46,6 +48,7 @@ function resetMockDb() {
       id: ANALYST_ID,
       email: "analista@sema.mt.gov.br",
       password: "analyst-old-password",
+      app_metadata: {},
       user_metadata: { nome: "Analista Silva" },
       banned_until: null,
     },
@@ -53,6 +56,7 @@ function resetMockDb() {
       id: VIEWER_ID,
       email: "visualizador@sema.mt.gov.br",
       password: "viewer-old-password",
+      app_metadata: {},
       user_metadata: { nome: "Visualizador Costa" },
       banned_until: null,
     },
@@ -60,6 +64,7 @@ function resetMockDb() {
       id: ORPHAN_AUTH_ID,
       email: "jaexisteauth@sema.mt.gov.br",
       password: "old-auth-password",
+      app_metadata: {},
       user_metadata: { nome: "Existente Auth" },
       banned_until: null,
     },
@@ -127,6 +132,7 @@ function installMockFetch(baseServerUrl: string) {
         JSON.stringify({
           id: authRec.id,
           email: authRec.email,
+          app_metadata: authRec.app_metadata,
           user_metadata: authRec.user_metadata,
         }),
         {
@@ -172,6 +178,7 @@ function installMockFetch(baseServerUrl: string) {
           id: `77777777-7777-4777-8777-00000000000${createdAuthCalls}`,
           email,
           password: String(body?.password || ""),
+          app_metadata: body?.app_metadata || {},
           user_metadata: body?.user_metadata || {},
           banned_until: body?.ban_duration ? "2099-01-01T00:00:00Z" : null,
         };
@@ -196,6 +203,12 @@ function installMockFetch(baseServerUrl: string) {
           }
           if (typeof body?.email === "string") {
             mockAuthUsers[idx].email = body.email.toLowerCase();
+          }
+          if (body?.app_metadata) {
+            mockAuthUsers[idx].app_metadata = {
+              ...mockAuthUsers[idx].app_metadata,
+              ...body.app_metadata,
+            };
           }
           if (body?.user_metadata) {
             mockAuthUsers[idx].user_metadata = {
@@ -519,7 +532,8 @@ test("Administrador edita, inativa/ativa, reseta senha de todos usuários e excl
   });
   assert.equal(resetAdmin.status, 200);
   assert.equal(mockAuthUsers.find((u) => u.id === ADMIN_ID)?.password, "novaSenhaAdmin99");
-  assert.equal(mockAuthUsers.find((u) => u.id === ADMIN_ID)?.user_metadata?.must_change_password, true);
+  assert.equal(mockAuthUsers.find((u) => u.id === ADMIN_ID)?.app_metadata?.must_change_password, true);
+  assert.equal(mockAuthUsers.find((u) => u.id === ADMIN_ID)?.user_metadata?.must_change_password, undefined);
 });
 
 test("Todo usuário autenticado (Visualizador, Analista, Administrador) pode trocar a própria senha", async () => {
@@ -578,9 +592,10 @@ test("Usuário criado ou com senha resetada é obrigado a trocar a senha antes d
   assert.equal(createRes.status, 201);
   const createdData = (await createRes.json()) as { user: MockPerfilRow };
   const newUserId = createdData.user.id;
-  assert.equal(mockAuthUsers.find((u) => u.id === newUserId)?.user_metadata?.must_change_password, true);
+  assert.equal(mockAuthUsers.find((u) => u.id === newUserId)?.app_metadata?.must_change_password, true);
+  assert.equal(mockAuthUsers.find((u) => u.id === newUserId)?.user_metadata?.must_change_password, undefined);
 
-  // Edição do nome pelo admin preserva a obrigatoriedade de troca de senha
+  // Edição do nome pelo admin preserva a obrigatoriedade de troca de senha em app_metadata
   const editBeforeLogin = await originalFetch(`${baseUrl}/api/users/${newUserId}`, {
     method: "PATCH",
     headers: {
@@ -590,7 +605,12 @@ test("Usuário criado ou com senha resetada é obrigado a trocar a senha antes d
     body: JSON.stringify({ nome: "Primeiro Acesso Editado" }),
   });
   assert.equal(editBeforeLogin.status, 200);
-  assert.equal(mockAuthUsers.find((u) => u.id === newUserId)?.user_metadata?.must_change_password, true);
+  assert.equal(mockAuthUsers.find((u) => u.id === newUserId)?.app_metadata?.must_change_password, true);
+
+  // Mesmo se o usuário alterasse user_metadata no cliente, app_metadata continua bloqueando o acesso
+  const createdAuthUser = mockAuthUsers.find((u) => u.id === newUserId);
+  assert.ok(createdAuthUser);
+  createdAuthUser.user_metadata.must_change_password = false;
 
   // Antes de trocar a senha, qualquer outra rota retorna 403 PASSWORD_CHANGE_REQUIRED
   const blockedRes = await originalFetch(`${baseUrl}/api/ecosystem/status`, {
@@ -613,7 +633,7 @@ test("Usuário criado ou com senha resetada é obrigado a trocar a senha antes d
     }),
   });
   assert.equal(changeFirstRes.status, 200);
-  assert.equal(mockAuthUsers.find((u) => u.id === newUserId)?.user_metadata?.must_change_password, false);
+  assert.equal(mockAuthUsers.find((u) => u.id === newUserId)?.app_metadata?.must_change_password, false);
 
   // Após trocar a senha, acesso às rotas normais é liberado
   const allowedAfterChange = await originalFetch(`${baseUrl}/api/ecosystem/status`, {
@@ -621,7 +641,7 @@ test("Usuário criado ou com senha resetada é obrigado a trocar a senha antes d
   });
   assert.equal(allowedAfterChange.status, 200);
 
-  // 2. Admin reseta a senha do Visualizador -> volta a exigir troca de senha
+  // 2. Admin reseta a senha do Visualizador -> volta a exigir troca de senha em app_metadata
   const resetViewerRes = await originalFetch(`${baseUrl}/api/users/${VIEWER_ID}/reset-password`, {
     method: "POST",
     headers: {
@@ -631,7 +651,8 @@ test("Usuário criado ou com senha resetada é obrigado a trocar a senha antes d
     body: JSON.stringify({}),
   });
   assert.equal(resetViewerRes.status, 200);
-  assert.equal(mockAuthUsers.find((u) => u.id === VIEWER_ID)?.user_metadata?.must_change_password, true);
+  assert.equal(mockAuthUsers.find((u) => u.id === VIEWER_ID)?.app_metadata?.must_change_password, true);
+  assert.equal(mockAuthUsers.find((u) => u.id === VIEWER_ID)?.user_metadata?.must_change_password, undefined);
 
   const blockedViewerRes = await originalFetch(`${baseUrl}/api/ecosystem/status`, {
     headers: { Authorization: "Bearer token-viewer" },
@@ -652,10 +673,44 @@ test("Usuário criado ou com senha resetada é obrigado a trocar a senha antes d
     }),
   });
   assert.equal(viewerChangeRes.status, 200);
-  assert.equal(mockAuthUsers.find((u) => u.id === VIEWER_ID)?.user_metadata?.must_change_password, false);
+  assert.equal(mockAuthUsers.find((u) => u.id === VIEWER_ID)?.app_metadata?.must_change_password, false);
 
   const viewerAllowedRes = await originalFetch(`${baseUrl}/api/ecosystem/status`, {
     headers: { Authorization: "Bearer token-viewer" },
   });
   assert.equal(viewerAllowedRes.status, 200);
+});
+
+test("Compatibilidade legada: conta já marcada em user_metadata continua obrigada a trocar a senha até a próxima troca", async () => {
+  const analystAuth = mockAuthUsers.find((u) => u.id === ANALYST_ID);
+  assert.ok(analystAuth);
+  analystAuth.app_metadata = {};
+  analystAuth.user_metadata = { nome: "Analista Silva", must_change_password: true };
+
+  const blockedLegacyRes = await originalFetch(`${baseUrl}/api/ecosystem/status`, {
+    headers: { Authorization: "Bearer token-analyst" },
+  });
+  assert.equal(blockedLegacyRes.status, 403);
+  const blockedLegacyBody = (await blockedLegacyRes.json()) as { code?: string };
+  assert.equal(blockedLegacyBody.code, "PASSWORD_CHANGE_REQUIRED");
+
+  const changeLegacyRes = await originalFetch(`${baseUrl}/api/auth/change-password`, {
+    method: "POST",
+    headers: {
+      Authorization: "Bearer token-analyst",
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      currentPassword: "analyst-old-password",
+      newPassword: "AnalistaNova#1",
+    }),
+  });
+  assert.equal(changeLegacyRes.status, 200);
+  assert.equal(analystAuth.app_metadata.must_change_password, false);
+  assert.equal(analystAuth.user_metadata.must_change_password, false);
+
+  const allowedLegacyRes = await originalFetch(`${baseUrl}/api/ecosystem/status`, {
+    headers: { Authorization: "Bearer token-analyst" },
+  });
+  assert.equal(allowedLegacyRes.status, 200);
 });

@@ -302,6 +302,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       prev
         ? {
             ...prev,
+            app_metadata: {
+              ...(prev.app_metadata || {}),
+              must_change_password: false,
+            },
             user_metadata: {
               ...(prev.user_metadata || {}),
               must_change_password: false,
@@ -317,7 +321,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const isVisualizador = role === 'Visualizador';
   const canEdit = isAdmin || isAnalista;
   const canDelete = isAdmin;
-  const mustChangePassword = Boolean(user?.user_metadata?.must_change_password);
+  const mustChangePassword = Boolean(
+    user?.app_metadata?.must_change_password ||
+    user?.user_metadata?.must_change_password
+  );
 
   const value = useMemo<AuthContextValue>(
     () => ({

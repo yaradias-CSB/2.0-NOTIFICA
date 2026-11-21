@@ -961,11 +961,15 @@ async function requireAuth(req: express.Request, res: express.Response, next: ex
     const authUser = (await authRes.json()) as {
       id?: string;
       email?: string;
+      app_metadata?: Record<string, unknown>;
       user_metadata?: Record<string, unknown>;
     };
     email = String(authUser?.email || "").trim().toLowerCase();
     authUserId = String(authUser?.id || "");
-    mustChangePassword = Boolean(authUser?.user_metadata?.must_change_password);
+    mustChangePassword = Boolean(
+      authUser?.app_metadata?.must_change_password ||
+      authUser?.user_metadata?.must_change_password
+    );
     if (!email) {
       return res.status(401).json({ error: "Usuário autenticado sem e-mail válido." });
     }
@@ -2894,6 +2898,7 @@ const USER_EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
 interface SupabaseAdminAuthUser {
   id: string;
   email?: string;
+  app_metadata?: Record<string, any>;
   user_metadata?: Record<string, any>;
   banned_until?: string | null;
 }
@@ -3158,19 +3163,27 @@ app.post("/api/auth/change-password", async (req, res) => {
     return res.status(404).json({ error: "Conta de autenticação não localizada no Supabase Auth." });
   }
 
+  const updateBody: Record<string, unknown> = {
+    password: newPassword,
+    app_metadata: {
+      ...(found.user?.app_metadata || {}),
+      must_change_password: false,
+    },
+  };
+  if (found.user?.user_metadata && "must_change_password" in found.user.user_metadata) {
+    updateBody.user_metadata = {
+      ...found.user.user_metadata,
+      must_change_password: false,
+    };
+  }
+
   const updateRes = await supabaseAuthAdminRequest(
     serviceCfg.authBaseUrl,
     serviceCfg.serviceRoleKey,
     `/users/${encodeURIComponent(targetAuthId)}`,
     {
       method: "PUT",
-      body: {
-        password: newPassword,
-        user_metadata: {
-          ...(found.user?.user_metadata || {}),
-          must_change_password: false,
-        },
-      },
+      body: updateBody,
     }
   );
 
@@ -3282,7 +3295,8 @@ app.post("/api/users", requireRole(["Administrador"]), async (req, res) => {
           email,
           password,
           email_confirm: true,
-          user_metadata: { nome, must_change_password: true },
+          app_metadata: { must_change_password: true },
+          user_metadata: { nome },
           ...(requestedStatus === "inativo" ? { ban_duration: "876000h" } : {}),
         },
       }
@@ -3305,10 +3319,13 @@ app.post("/api/users", requireRole(["Administrador"]), async (req, res) => {
         body: {
           email_confirm: true,
           password,
+          app_metadata: {
+            ...(existingAuthRes.user?.app_metadata || {}),
+            must_change_password: true,
+          },
           user_metadata: {
             ...(existingAuthRes.user?.user_metadata || {}),
             nome,
-            must_change_password: true,
           },
           ban_duration: requestedStatus === "ativo" ? "none" : "876000h",
         },
@@ -3575,8 +3592,8 @@ app.post("/api/users/:id/reset-password", requireRole(["Administrador"]), async 
       method: "PUT",
       body: {
         password: nextPassword,
-        user_metadata: {
-          ...(authLookup.user.user_metadata || {}),
+        app_metadata: {
+          ...(authLookup.user.app_metadata || {}),
           must_change_password: true,
         },
       },
