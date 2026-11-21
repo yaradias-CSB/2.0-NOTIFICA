@@ -40,7 +40,8 @@ import {
   RefreshCw,
   ChevronDown,
   Globe,
-  LogOut
+  LogOut,
+  KeyRound
 } from 'lucide-react';
 
 import Dashboard from './components/Dashboard';
@@ -57,6 +58,7 @@ import { EcosystemContext } from './contexts/EcosystemContext';
 import { useNotifications } from './contexts/NotificationContext';
 import { useAuth } from './contexts/AuthContext';
 import { UserManagement } from './components/UserManagement';
+import { ChangePasswordModal } from './components/ChangePasswordModal';
 import { AuditLogs } from './components/AuditLogs';
 import { ParecerData, OficioData } from './types';
 import { AppDocument } from './contexts/DataContext';
@@ -70,6 +72,7 @@ const App: React.FC = () => {
   const [isQuickCreateOpen, setIsQuickCreateOpen] = useState(false);
   const [isSidebarManualCollapsed, setIsSidebarManualCollapsed] = useState(false);
   const [showBackToTop, setShowBackToTop] = useState(false);
+  const [isChangePasswordOpen, setIsChangePasswordOpen] = useState(false);
   const [returnView, setReturnView] = useState<'dashboard' | 'list' | 'controle_notificacoes'>('dashboard');
 
   useEffect(() => {
@@ -398,14 +401,27 @@ const App: React.FC = () => {
                   <p className="text-[10px] font-bold uppercase tracking-wider text-emerald-400 truncate">{role}</p>
                 </div>
               </div>
-              <button
-                type="button"
-                onClick={() => void signOut()}
-                className="flex items-center justify-center gap-2 w-full px-3 py-2 rounded-xl bg-slate-800 hover:bg-rose-600/90 text-slate-300 hover:text-white text-xs font-bold transition-colors cursor-pointer"
-              >
-                <LogOut size={14} />
-                <span>Sair</span>
-              </button>
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsMobileMenuOpen(false);
+                    setIsChangePasswordOpen(true);
+                  }}
+                  className="flex items-center justify-center gap-1.5 w-full px-2.5 py-2 rounded-xl bg-slate-800 hover:bg-emerald-600 text-slate-200 hover:text-white text-xs font-bold transition-colors cursor-pointer"
+                >
+                  <KeyRound size={14} />
+                  <span>Trocar senha</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void signOut()}
+                  className="flex items-center justify-center gap-1.5 w-full px-2.5 py-2 rounded-xl bg-slate-800 hover:bg-rose-600/90 text-slate-300 hover:text-white text-xs font-bold transition-colors cursor-pointer"
+                >
+                  <LogOut size={14} />
+                  <span>Sair</span>
+                </button>
+              </div>
             </div>
           </>
         ) : (
@@ -499,6 +515,15 @@ const App: React.FC = () => {
             </div>
 
             <div className="w-8 h-px bg-slate-800"></div>
+
+            <button
+              type="button"
+              onClick={() => setIsChangePasswordOpen(true)}
+              className="p-3 rounded-xl text-slate-400 hover:bg-emerald-600 hover:text-white transition-all cursor-pointer"
+              title="Trocar senha"
+            >
+              <KeyRound size={20} />
+            </button>
 
             <button
               type="button"
@@ -1221,6 +1246,11 @@ const App: React.FC = () => {
           <ChevronUp size={24} />
         </button>
       )}
+
+      <ChangePasswordModal
+        isOpen={isChangePasswordOpen}
+        onClose={() => setIsChangePasswordOpen(false)}
+      />
     </div>
   );
 };

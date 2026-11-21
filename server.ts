@@ -945,6 +945,7 @@ async function requireAuth(req: express.Request, res: express.Response, next: ex
 
   let email = "";
   let authUserId = "";
+  let mustChangePassword = false;
   try {
     const authRes = await fetch(`${authBaseUrl}/auth/v1/user`, {
       method: "GET",
@@ -957,9 +958,14 @@ async function requireAuth(req: express.Request, res: express.Response, next: ex
     if (!authRes.ok) {
       return res.status(401).json({ error: "Sessão inválida ou expirada." });
     }
-    const authUser = (await authRes.json()) as { id?: string; email?: string };
+    const authUser = (await authRes.json()) as {
+      id?: string;
+      email?: string;
+      user_metadata?: Record<string, unknown>;
+    };
     email = String(authUser?.email || "").trim().toLowerCase();
     authUserId = String(authUser?.id || "");
+    mustChangePassword = Boolean(authUser?.user_metadata?.must_change_password);
     if (!email) {
       return res.status(401).json({ error: "Usuário autenticado sem e-mail válido." });
     }
@@ -1006,6 +1012,13 @@ async function requireAuth(req: express.Request, res: express.Response, next: ex
     nome: String(matched.nome || email).trim(),
     perfil,
   };
+
+  if (mustChangePassword && cleanPath !== "/api/auth/change-password") {
+    return res.status(403).json({
+      error: "Troca de senha obrigatória no primeiro acesso antes de continuar.",
+      code: "PASSWORD_CHANGE_REQUIRED",
+    });
+  }
 
   return next();
 }
@@ -2869,6 +2882,786 @@ app.patch("/api/pendencias/:id", requireRole(["Administrador", "Analista"]), asy
     readOnly: true,
     code: "ATOMIC_TRANSACTION_REQUIRED",
   });
+});
+
+// ============================================================================
+// Gestão de Usuários (Somente Administrador) e Troca de Senha (Todo Usuário)
+// ============================================================================
+
+const DEFAULT_SUGGESTED_USER_PASSWORD = "@12345";
+const USER_EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
+
+interface SupabaseAdminAuthUser {
+  id: string;
+  email?: string;
+  user_metadata?: Record<string, any>;
+  banned_until?: string | null;
+}
+
+function getNotificaServiceRoleConfig(): {
+  restConfig: RemoteServiceConfig;
+  authBaseUrl: string;
+  serviceRoleKey: string;
+} | null {
+  const endpoint = (
+    process.env.NOTIFICA_SUPABASE_URL?.trim() ||
+    process.env.NOTIFICA_SERVICE_ENDPOINT?.trim() ||
+    process.env.NOTIFICA_DB_URL?.trim() ||
+    ""
+  )
+    .replace(/\/rest\/v1\/?$/i, "")
+    .replace(/\/+$/, "");
+
+  const serviceRoleKey =
+    process.env.NOTIFICA_SUPABASE_SERVICE_ROLE_KEY?.trim() ||
+    process.env.NOTIFICA_SERVICE_TOKEN?.trim() ||
+    "";
+
+  if (
+    !endpoint ||
+    !/^https?:\/\//i.test(endpoint) ||
+    endpoint.includes("placeholder") ||
+    serviceRoleKey.length <= 10
+  ) {
+    return null;
+  }
+
+  return {
+    restConfig: { endpoint, token: serviceRoleKey },
+    authBaseUrl: endpoint,
+    serviceRoleKey,
+  };
+}
+
+function normalizeUserStatus(raw: unknown): "ativo" | "inativo" | null {
+  const normalized = String(raw || "")
+    .trim()
+    .toLowerCase();
+  if (normalized === "ativo") return "ativo";
+  if (normalized === "inativo") return "inativo";
+  return null;
+}
+
+function sanitizeUserName(raw: unknown): string {
+  if (typeof raw !== "string") return "";
+  return raw
+    .replace(/[\u0000-\u001F\u007F]/g, "")
+    .replace(/<[^>]*>?/gm, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 140);
+}
+
+async function supabaseAuthAdminRequest<T = any>(
+  authBaseUrl: string,
+  serviceRoleKey: string,
+  path: string,
+  options: {
+    method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
+    body?: unknown;
+  } = {}
+): Promise<{ ok: boolean; status: number; data: T | null; errorMessage?: string }> {
+  const url = `${authBaseUrl}/auth/v1/admin${path}`;
+  try {
+    const response = await fetch(url, {
+      method: options.method || "GET",
+      headers: {
+        apikey: serviceRoleKey,
+        Authorization: `Bearer ${serviceRoleKey}`,
+        "Content-Type": "application/json",
+      },
+      body: options.body !== undefined ? JSON.stringify(options.body) : undefined,
+      signal: AbortSignal.timeout(10000),
+    });
+
+    const text = await response.text();
+    let parsed: any = null;
+    try {
+      parsed = text ? JSON.parse(text) : null;
+    } catch {
+      parsed = null;
+    }
+
+    if (!response.ok) {
+      const msg =
+        (parsed && (parsed.msg || parsed.message || parsed.error_description || parsed.error)) ||
+        `Erro HTTP ${response.status}`;
+      return {
+        ok: false,
+        status: response.status,
+        data: null,
+        errorMessage: String(msg),
+      };
+    }
+
+    return { ok: true, status: response.status, data: parsed as T };
+  } catch {
+    return {
+      ok: false,
+      status: 502,
+      data: null,
+      errorMessage: "Falha de comunicação com o serviço de autenticação.",
+    };
+  }
+}
+
+function extractAdminAuthUser(payload: any): SupabaseAdminAuthUser | null {
+  if (!payload || typeof payload !== "object") return null;
+  const candidate = payload.id ? payload : payload.user;
+  if (candidate && typeof candidate === "object" && typeof candidate.id === "string") {
+    return candidate as SupabaseAdminAuthUser;
+  }
+  return null;
+}
+
+async function findSupabaseAuthUser(
+  authBaseUrl: string,
+  serviceRoleKey: string,
+  lookup: { id?: string; email?: string }
+): Promise<{ ok: boolean; user: SupabaseAdminAuthUser | null; errorMessage?: string }> {
+  const normalizedId = String(lookup.id || "").trim();
+  const normalizedEmail = String(lookup.email || "").trim().toLowerCase();
+
+  if (normalizedId && isValidPendenciaUuid(normalizedId)) {
+    const byIdRes = await supabaseAuthAdminRequest<any>(
+      authBaseUrl,
+      serviceRoleKey,
+      `/users/${encodeURIComponent(normalizedId)}`
+    );
+    if (byIdRes.ok) {
+      const extracted = extractAdminAuthUser(byIdRes.data);
+      if (extracted) {
+        return { ok: true, user: extracted };
+      }
+    } else if (byIdRes.status !== 404) {
+      return { ok: false, user: null, errorMessage: byIdRes.errorMessage };
+    }
+  }
+
+  if (!normalizedEmail) {
+    return { ok: true, user: null };
+  }
+
+  for (let page = 1; page <= 5; page += 1) {
+    const listRes = await supabaseAuthAdminRequest<{ users?: SupabaseAdminAuthUser[] } | SupabaseAdminAuthUser[]>(
+      authBaseUrl,
+      serviceRoleKey,
+      `/users?page=${page}&per_page=1000`
+    );
+    if (!listRes.ok) {
+      return { ok: false, user: null, errorMessage: listRes.errorMessage };
+    }
+    const users = Array.isArray(listRes.data)
+      ? listRes.data
+      : Array.isArray(listRes.data?.users)
+        ? listRes.data.users
+        : [];
+    const matched = users.find(
+      (u) => String(u?.email || "").trim().toLowerCase() === normalizedEmail
+    );
+    if (matched) {
+      return { ok: true, user: matched };
+    }
+    if (users.length < 1000) {
+      break;
+    }
+  }
+
+  return { ok: true, user: null };
+}
+
+function isSameAdminTarget(
+  target: { id?: string; email?: string },
+  authUser: AuthenticatedUser
+): boolean {
+  const targetId = String(target.id || "").trim();
+  const targetEmail = String(target.email || "").trim().toLowerCase();
+  if (authUser.perfilId && targetId && targetId === authUser.perfilId) return true;
+  if (targetId && targetId === authUser.id) return true;
+  if (targetEmail && targetEmail === authUser.email.toLowerCase()) return true;
+  return false;
+}
+
+function sanitizePerfilUsuarioRow(row: Record<string, any>) {
+  return {
+    id: String(row.id || "").trim(),
+    email: String(row.email || "").trim().toLowerCase(),
+    nome: String(row.nome || "").trim(),
+    perfil: normalizeUserRole(row.perfil) || ("Visualizador" as UserRole),
+    status: normalizeUserStatus(row.status) || "inativo",
+  };
+}
+
+// Endpoint disponível para TODO usuário autenticado (Administrador, Analista, Visualizador)
+app.post("/api/auth/change-password", async (req, res) => {
+  const authUser = getSessionIdentity(req);
+  if (!authUser) {
+    return res.status(401).json({ error: "Usuário não autenticado." });
+  }
+
+  const body = req.body && typeof req.body === "object" ? (req.body as Record<string, unknown>) : null;
+  if (!body) {
+    return res.status(400).json({ error: "Corpo da requisição inválido." });
+  }
+
+  const currentPassword = typeof body.currentPassword === "string" ? body.currentPassword : "";
+  const newPassword = typeof body.newPassword === "string" ? body.newPassword : "";
+
+  if (!currentPassword) {
+    return res.status(400).json({ error: "Informe sua senha atual." });
+  }
+  if (newPassword.length < 6 || newPassword.length > 128) {
+    return res.status(400).json({ error: "A nova senha deve ter entre 6 e 128 caracteres." });
+  }
+  if (newPassword === currentPassword) {
+    return res.status(400).json({ error: "A nova senha deve ser diferente da senha atual." });
+  }
+
+  const serviceCfg = getNotificaServiceRoleConfig();
+  if (!serviceCfg) {
+    return res.status(503).json({ error: "Serviço administrativo de autenticação não configurado no servidor." });
+  }
+
+  const authApiKey = getNotificaAuthApiKey(getServiceConfig("NOTIFICA")) || serviceCfg.serviceRoleKey;
+
+  try {
+    const verifyRes = await fetch(`${serviceCfg.authBaseUrl}/auth/v1/token?grant_type=password`, {
+      method: "POST",
+      headers: {
+        apikey: authApiKey,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        email: authUser.email,
+        password: currentPassword,
+      }),
+      signal: AbortSignal.timeout(8000),
+    });
+
+    if (!verifyRes.ok) {
+      return res.status(400).json({ error: "Senha atual incorreta." });
+    }
+  } catch {
+    return res.status(502).json({ error: "Não foi possível validar a senha atual." });
+  }
+
+  const found = await findSupabaseAuthUser(serviceCfg.authBaseUrl, serviceCfg.serviceRoleKey, {
+    id: authUser.id,
+    email: authUser.email,
+  });
+  if (!found.ok) {
+    return res.status(502).json({ error: found.errorMessage || "Falha ao localizar usuário autenticado." });
+  }
+
+  const targetAuthId = found.user?.id || (isValidPendenciaUuid(authUser.id) ? authUser.id : "");
+  if (!targetAuthId) {
+    return res.status(404).json({ error: "Conta de autenticação não localizada no Supabase Auth." });
+  }
+
+  const updateRes = await supabaseAuthAdminRequest(
+    serviceCfg.authBaseUrl,
+    serviceCfg.serviceRoleKey,
+    `/users/${encodeURIComponent(targetAuthId)}`,
+    {
+      method: "PUT",
+      body: {
+        password: newPassword,
+        user_metadata: {
+          ...(found.user?.user_metadata || {}),
+          must_change_password: false,
+        },
+      },
+    }
+  );
+
+  if (!updateRes.ok) {
+    return res.status(502).json({ error: updateRes.errorMessage || "Não foi possível atualizar a senha." });
+  }
+
+  return res.json({ ok: true, message: "Senha alterada com sucesso." });
+});
+
+app.get("/api/users", requireRole(["Administrador"]), async (_req, res) => {
+  const serviceCfg = getNotificaServiceRoleConfig();
+  const restCfg = serviceCfg?.restConfig || getServiceConfig("NOTIFICA");
+  if (!restCfg) {
+    return res.status(503).json({ error: "Persistência de usuários não configurada no servidor." });
+  }
+
+  const usersRes = await remoteRestRequest<Array<Record<string, any>>>(restCfg, "perfis_usuarios", {
+    query: "select=id,email,nome,perfil,status&order=nome.asc&limit=1000",
+  });
+
+  if (!usersRes.ok || !Array.isArray(usersRes.data)) {
+    return res.status(502).json({ error: "Falha ao consultar usuários no Supabase." });
+  }
+
+  const users = usersRes.data
+    .filter((row) => row && typeof row === "object" && row.id)
+    .map((row) => sanitizePerfilUsuarioRow(row));
+
+  return res.json({ users });
+});
+
+app.post("/api/users", requireRole(["Administrador"]), async (req, res) => {
+  const serviceCfg = getNotificaServiceRoleConfig();
+  if (!serviceCfg) {
+    return res.status(503).json({
+      error: "Chave administrativa do Supabase (service_role) não configurada no servidor.",
+    });
+  }
+
+  const body = req.body && typeof req.body === "object" ? (req.body as Record<string, unknown>) : null;
+  if (!body) {
+    return res.status(400).json({ error: "Corpo da requisição inválido." });
+  }
+
+  const nome = sanitizeUserName(body.nome);
+  const email = String(body.email || "").trim().toLowerCase();
+  const perfil = normalizeUserRole(body.perfil);
+  const requestedStatus = body.status !== undefined ? normalizeUserStatus(body.status) : "ativo";
+  const rawPassword = typeof body.password === "string" ? body.password : "";
+  const password = rawPassword ? rawPassword : DEFAULT_SUGGESTED_USER_PASSWORD;
+
+  if (nome.length < 2) {
+    return res.status(400).json({ error: "Informe o nome completo do usuário (mínimo 2 caracteres)." });
+  }
+  if (!USER_EMAIL_REGEX.test(email)) {
+    return res.status(400).json({ error: "Informe um e-mail válido." });
+  }
+  if (!perfil) {
+    return res.status(400).json({ error: "Perfil inválido. Selecione Administrador, Analista ou Visualizador." });
+  }
+  if (!requestedStatus) {
+    return res.status(400).json({ error: "Status inválido. Utilize ativo ou inativo." });
+  }
+  if (password.length < 6 || password.length > 128) {
+    return res.status(400).json({ error: "A senha deve ter entre 6 e 128 caracteres." });
+  }
+
+  const cleanEmailPattern = email.replace(/[%*]/g, "");
+  const existingProfileRes = await remoteRestRequest<Array<Record<string, any>>>(
+    serviceCfg.restConfig,
+    "perfis_usuarios",
+    {
+      query: `select=id,email&email=ilike.${encodeURIComponent(cleanEmailPattern)}&limit=10`,
+    }
+  );
+  if (!existingProfileRes.ok || !Array.isArray(existingProfileRes.data)) {
+    return res.status(502).json({ error: "Não foi possível verificar usuários existentes." });
+  }
+  const emailAlreadyInProfile = existingProfileRes.data.some(
+    (row) => String(row?.email || "").trim().toLowerCase() === email
+  );
+  if (emailAlreadyInProfile) {
+    return res.status(409).json({ error: "Já existe um usuário cadastrado com este e-mail." });
+  }
+
+  const existingAuthRes = await findSupabaseAuthUser(
+    serviceCfg.authBaseUrl,
+    serviceCfg.serviceRoleKey,
+    { email }
+  );
+  if (!existingAuthRes.ok) {
+    return res.status(502).json({
+      error: existingAuthRes.errorMessage || "Falha ao verificar conta no Supabase Auth.",
+    });
+  }
+
+  let authUserId = existingAuthRes.user?.id || "";
+  let createdNewAuthUser = false;
+
+  if (!authUserId) {
+    const createAuthRes = await supabaseAuthAdminRequest<any>(
+      serviceCfg.authBaseUrl,
+      serviceCfg.serviceRoleKey,
+      "/users",
+      {
+        method: "POST",
+        body: {
+          email,
+          password,
+          email_confirm: true,
+          user_metadata: { nome, must_change_password: true },
+          ...(requestedStatus === "inativo" ? { ban_duration: "876000h" } : {}),
+        },
+      }
+    );
+    const createdAuth = extractAdminAuthUser(createAuthRes.data);
+    if (!createAuthRes.ok || !createdAuth?.id) {
+      return res.status(createAuthRes.status >= 400 && createAuthRes.status < 500 ? 400 : 502).json({
+        error: createAuthRes.errorMessage || "Não foi possível criar a conta no Supabase Auth.",
+      });
+    }
+    authUserId = createdAuth.id;
+    createdNewAuthUser = true;
+  } else {
+    const syncExistingAuthRes = await supabaseAuthAdminRequest<any>(
+      serviceCfg.authBaseUrl,
+      serviceCfg.serviceRoleKey,
+      `/users/${encodeURIComponent(authUserId)}`,
+      {
+        method: "PUT",
+        body: {
+          email_confirm: true,
+          password,
+          user_metadata: {
+            ...(existingAuthRes.user?.user_metadata || {}),
+            nome,
+            must_change_password: true,
+          },
+          ban_duration: requestedStatus === "ativo" ? "none" : "876000h",
+        },
+      }
+    );
+    if (!syncExistingAuthRes.ok) {
+      return res.status(502).json({
+        error:
+          syncExistingAuthRes.errorMessage ||
+          "Não foi possível sincronizar a conta existente no Supabase Auth.",
+      });
+    }
+  }
+
+  const insertProfileRes = await remoteRestRequest<Array<Record<string, any>>>(
+    serviceCfg.restConfig,
+    "perfis_usuarios",
+    {
+      method: "POST",
+      prefer: "return=representation",
+      body: {
+        id: authUserId,
+        email,
+        nome,
+        perfil,
+        status: requestedStatus,
+      },
+    }
+  );
+
+  if (!insertProfileRes.ok || !Array.isArray(insertProfileRes.data) || !insertProfileRes.data[0]) {
+    if (createdNewAuthUser) {
+      await supabaseAuthAdminRequest(
+        serviceCfg.authBaseUrl,
+        serviceCfg.serviceRoleKey,
+        `/users/${encodeURIComponent(authUserId)}`,
+        { method: "DELETE" }
+      );
+    }
+    return res.status(502).json({ error: "Não foi possível salvar o perfil do usuário em perfis_usuarios." });
+  }
+
+  return res.status(201).json({
+    user: sanitizePerfilUsuarioRow(insertProfileRes.data[0]),
+    message:
+      requestedStatus === "ativo"
+        ? "Usuário salvo e ativado com sucesso."
+        : "Usuário salvo com sucesso.",
+  });
+});
+
+app.patch("/api/users/:id", requireRole(["Administrador"]), async (req, res) => {
+  const authUser = getSessionIdentity(req);
+  if (!authUser) {
+    return res.status(401).json({ error: "Usuário não autenticado." });
+  }
+
+  const id = String(req.params.id || "").trim();
+  if (!isValidPendenciaUuid(id)) {
+    return res.status(400).json({ error: "ID de usuário inválido." });
+  }
+
+  const serviceCfg = getNotificaServiceRoleConfig();
+  if (!serviceCfg) {
+    return res.status(503).json({
+      error: "Chave administrativa do Supabase (service_role) não configurada no servidor.",
+    });
+  }
+
+  const body = req.body && typeof req.body === "object" ? (req.body as Record<string, unknown>) : null;
+  if (!body) {
+    return res.status(400).json({ error: "Corpo da requisição inválido." });
+  }
+
+  const existingRes = await remoteRestRequest<Array<Record<string, any>>>(
+    serviceCfg.restConfig,
+    "perfis_usuarios",
+    {
+      query: `select=id,email,nome,perfil,status&id=eq.${encodeURIComponent(id)}&limit=1`,
+    }
+  );
+  if (!existingRes.ok || !Array.isArray(existingRes.data)) {
+    return res.status(502).json({ error: "Falha ao consultar usuário para atualização." });
+  }
+  const existing = existingRes.data[0];
+  if (!existing) {
+    return res.status(404).json({ error: "Usuário não encontrado." });
+  }
+
+  const existingClean = sanitizePerfilUsuarioRow(existing);
+  const nextNome = body.nome !== undefined ? sanitizeUserName(body.nome) : existingClean.nome;
+  const nextEmail =
+    body.email !== undefined ? String(body.email || "").trim().toLowerCase() : existingClean.email;
+  const nextPerfil =
+    body.perfil !== undefined ? normalizeUserRole(body.perfil) : existingClean.perfil;
+  const nextStatus =
+    body.status !== undefined ? normalizeUserStatus(body.status) : existingClean.status;
+
+  if (nextNome.length < 2) {
+    return res.status(400).json({ error: "Informe o nome completo do usuário (mínimo 2 caracteres)." });
+  }
+  if (!USER_EMAIL_REGEX.test(nextEmail)) {
+    return res.status(400).json({ error: "Informe um e-mail válido." });
+  }
+  if (!nextPerfil) {
+    return res.status(400).json({ error: "Perfil inválido." });
+  }
+  if (!nextStatus) {
+    return res.status(400).json({ error: "Status inválido. Utilize ativo ou inativo." });
+  }
+
+  const isSelf = isSameAdminTarget(existingClean, authUser);
+  if (isSelf && nextStatus === "inativo") {
+    return res.status(400).json({ error: "Você não pode inativar sua própria conta de Administrador." });
+  }
+  if (isSelf && nextPerfil !== "Administrador") {
+    return res.status(400).json({ error: "Você não pode remover seu próprio perfil de Administrador." });
+  }
+
+  if (nextEmail !== existingClean.email) {
+    const cleanEmailPattern = nextEmail.replace(/[%*]/g, "");
+    const dupRes = await remoteRestRequest<Array<Record<string, any>>>(
+      serviceCfg.restConfig,
+      "perfis_usuarios",
+      {
+        query: `select=id,email&email=ilike.${encodeURIComponent(cleanEmailPattern)}&limit=10`,
+      }
+    );
+    if (!dupRes.ok || !Array.isArray(dupRes.data)) {
+      return res.status(502).json({ error: "Não foi possível validar o novo e-mail." });
+    }
+    const emailTaken = dupRes.data.some(
+      (row) =>
+        String(row?.id || "").trim() !== id &&
+        String(row?.email || "").trim().toLowerCase() === nextEmail
+    );
+    if (emailTaken) {
+      return res.status(409).json({ error: "Já existe outro usuário cadastrado com este e-mail." });
+    }
+  }
+
+  const patchProfileRes = await remoteRestRequest<Array<Record<string, any>>>(
+    serviceCfg.restConfig,
+    "perfis_usuarios",
+    {
+      method: "PATCH",
+      query: `id=eq.${encodeURIComponent(id)}`,
+      prefer: "return=representation",
+      body: {
+        nome: nextNome,
+        email: nextEmail,
+        perfil: nextPerfil,
+        status: nextStatus,
+      },
+    }
+  );
+  if (!patchProfileRes.ok || !Array.isArray(patchProfileRes.data) || !patchProfileRes.data[0]) {
+    return res.status(502).json({ error: "Falha ao atualizar usuário em perfis_usuarios." });
+  }
+
+  const authLookup = await findSupabaseAuthUser(serviceCfg.authBaseUrl, serviceCfg.serviceRoleKey, {
+    id,
+    email: existingClean.email,
+  });
+  if (authLookup.ok && authLookup.user?.id) {
+    const emailChanged = nextEmail !== existingClean.email;
+    const statusChanged = nextStatus !== existingClean.status;
+    const nomeChanged = nextNome !== existingClean.nome;
+
+    if (emailChanged || statusChanged || nomeChanged) {
+      const authPatch: Record<string, unknown> = {
+        user_metadata: {
+          ...(authLookup.user.user_metadata || {}),
+          nome: nextNome,
+        },
+      };
+      if (emailChanged) {
+        authPatch.email = nextEmail;
+        authPatch.email_confirm = true;
+      }
+      if (statusChanged) {
+        authPatch.ban_duration = nextStatus === "inativo" ? "876000h" : "none";
+      }
+
+      const authUpdateRes = await supabaseAuthAdminRequest(
+        serviceCfg.authBaseUrl,
+        serviceCfg.serviceRoleKey,
+        `/users/${encodeURIComponent(authLookup.user.id)}`,
+        {
+          method: "PUT",
+          body: authPatch,
+        }
+      );
+      if (!authUpdateRes.ok && emailChanged) {
+        await remoteRestRequest(serviceCfg.restConfig, "perfis_usuarios", {
+          method: "PATCH",
+          query: `id=eq.${encodeURIComponent(id)}`,
+          body: { email: existingClean.email },
+        });
+        return res.status(502).json({
+          error: authUpdateRes.errorMessage || "Não foi possível atualizar o e-mail no Supabase Auth.",
+        });
+      }
+    }
+  }
+
+  return res.json({
+    user: sanitizePerfilUsuarioRow(patchProfileRes.data[0]),
+  });
+});
+
+app.post("/api/users/:id/reset-password", requireRole(["Administrador"]), async (req, res) => {
+  const id = String(req.params.id || "").trim();
+  if (!isValidPendenciaUuid(id)) {
+    return res.status(400).json({ error: "ID de usuário inválido." });
+  }
+
+  const serviceCfg = getNotificaServiceRoleConfig();
+  if (!serviceCfg) {
+    return res.status(503).json({
+      error: "Chave administrativa do Supabase (service_role) não configurada no servidor.",
+    });
+  }
+
+  const body = req.body && typeof req.body === "object" ? (req.body as Record<string, unknown>) : {};
+  const rawPassword = typeof body.newPassword === "string" ? body.newPassword : "";
+  const nextPassword = rawPassword ? rawPassword : DEFAULT_SUGGESTED_USER_PASSWORD;
+
+  if (nextPassword.length < 6 || nextPassword.length > 128) {
+    return res.status(400).json({ error: "A nova senha deve ter entre 6 e 128 caracteres." });
+  }
+
+  const existingRes = await remoteRestRequest<Array<Record<string, any>>>(
+    serviceCfg.restConfig,
+    "perfis_usuarios",
+    {
+      query: `select=id,email,nome,perfil,status&id=eq.${encodeURIComponent(id)}&limit=1`,
+    }
+  );
+  if (!existingRes.ok || !Array.isArray(existingRes.data)) {
+    return res.status(502).json({ error: "Falha ao consultar usuário." });
+  }
+  const existing = existingRes.data[0];
+  if (!existing) {
+    return res.status(404).json({ error: "Usuário não encontrado." });
+  }
+
+  const authLookup = await findSupabaseAuthUser(serviceCfg.authBaseUrl, serviceCfg.serviceRoleKey, {
+    id,
+    email: String(existing.email || "").trim().toLowerCase(),
+  });
+  if (!authLookup.ok) {
+    return res.status(502).json({ error: authLookup.errorMessage || "Falha ao localizar usuário no Supabase Auth." });
+  }
+  if (!authLookup.user?.id) {
+    return res.status(404).json({ error: "Conta de autenticação não encontrada no Supabase Auth para este usuário." });
+  }
+
+  const resetRes = await supabaseAuthAdminRequest(
+    serviceCfg.authBaseUrl,
+    serviceCfg.serviceRoleKey,
+    `/users/${encodeURIComponent(authLookup.user.id)}`,
+    {
+      method: "PUT",
+      body: {
+        password: nextPassword,
+        user_metadata: {
+          ...(authLookup.user.user_metadata || {}),
+          must_change_password: true,
+        },
+      },
+    }
+  );
+  if (!resetRes.ok) {
+    return res.status(502).json({ error: resetRes.errorMessage || "Não foi possível redefinir a senha." });
+  }
+
+  return res.json({ ok: true, message: "Senha redefinida com sucesso." });
+});
+
+app.delete("/api/users/:id", requireRole(["Administrador"]), async (req, res) => {
+  const authUser = getSessionIdentity(req);
+  if (!authUser) {
+    return res.status(401).json({ error: "Usuário não autenticado." });
+  }
+
+  const id = String(req.params.id || "").trim();
+  if (!isValidPendenciaUuid(id)) {
+    return res.status(400).json({ error: "ID de usuário inválido." });
+  }
+
+  const serviceCfg = getNotificaServiceRoleConfig();
+  if (!serviceCfg) {
+    return res.status(503).json({
+      error: "Chave administrativa do Supabase (service_role) não configurada no servidor.",
+    });
+  }
+
+  const existingRes = await remoteRestRequest<Array<Record<string, any>>>(
+    serviceCfg.restConfig,
+    "perfis_usuarios",
+    {
+      query: `select=id,email,nome,perfil,status&id=eq.${encodeURIComponent(id)}&limit=1`,
+    }
+  );
+  if (!existingRes.ok || !Array.isArray(existingRes.data)) {
+    return res.status(502).json({ error: "Falha ao consultar usuário para exclusão." });
+  }
+  const existing = existingRes.data[0];
+  if (!existing) {
+    return res.status(404).json({ error: "Usuário não encontrado." });
+  }
+
+  const existingClean = sanitizePerfilUsuarioRow(existing);
+  if (isSameAdminTarget(existingClean, authUser)) {
+    return res.status(400).json({ error: "Você não pode excluir sua própria conta." });
+  }
+
+  const authLookup = await findSupabaseAuthUser(serviceCfg.authBaseUrl, serviceCfg.serviceRoleKey, {
+    id,
+    email: existingClean.email,
+  });
+  if (!authLookup.ok) {
+    return res.status(502).json({
+      error: authLookup.errorMessage || "Falha ao localizar usuário no Supabase Auth.",
+    });
+  }
+
+  const delProfileRes = await remoteRestRequest(serviceCfg.restConfig, "perfis_usuarios", {
+    method: "DELETE",
+    query: `id=eq.${encodeURIComponent(id)}`,
+  });
+  if (!delProfileRes.ok) {
+    return res.status(502).json({ error: "Não foi possível remover o perfil do usuário." });
+  }
+
+  if (authLookup.user?.id) {
+    const delAuthRes = await supabaseAuthAdminRequest(
+      serviceCfg.authBaseUrl,
+      serviceCfg.serviceRoleKey,
+      `/users/${encodeURIComponent(authLookup.user.id)}`,
+      { method: "DELETE" }
+    );
+    if (!delAuthRes.ok && delAuthRes.status !== 404) {
+      return res.status(502).json({
+        error:
+          delAuthRes.errorMessage ||
+          "Perfil removido, mas não foi possível remover a conta do Supabase Auth.",
+      });
+    }
+  }
+
+  return res.json({ ok: true, message: "Usuário excluído com sucesso." });
 });
 
 const isProduction = process.env.NODE_ENV === "production" || Boolean(process.env.VERCEL);

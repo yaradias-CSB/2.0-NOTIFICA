@@ -35,7 +35,9 @@ interface AuthContextValue {
   isVisualizador: boolean;
   canEdit: boolean;
   canDelete: boolean;
+  mustChangePassword: boolean;
   clearError: () => void;
+  clearMustChangePassword: () => Promise<void>;
   signIn: (email: string, password: string) => Promise<{ success: boolean; error?: string }>;
   signOut: () => Promise<void>;
 }
@@ -284,12 +286,38 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const clearError = useCallback(() => setError(null), []);
 
+  const clearMustChangePassword = useCallback(async () => {
+    if (configured) {
+      try {
+        const { data } = await getSupabaseClient().auth.refreshSession();
+        if (data.session) {
+          await verifyAndApplySession(data.session);
+          return;
+        }
+      } catch {
+        // Fallback para atualizar o estado local imediatamente após confirmação no servidor
+      }
+    }
+    setUser((prev) =>
+      prev
+        ? {
+            ...prev,
+            user_metadata: {
+              ...(prev.user_metadata || {}),
+              must_change_password: false,
+            },
+          }
+        : prev
+    );
+  }, [configured, verifyAndApplySession]);
+
   const role = profile?.perfil ?? null;
   const isAdmin = role === 'Administrador';
   const isAnalista = role === 'Analista';
   const isVisualizador = role === 'Visualizador';
   const canEdit = isAdmin || isAnalista;
   const canDelete = isAdmin;
+  const mustChangePassword = Boolean(user?.user_metadata?.must_change_password);
 
   const value = useMemo<AuthContextValue>(
     () => ({
@@ -305,7 +333,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       isVisualizador,
       canEdit,
       canDelete,
+      mustChangePassword,
       clearError,
+      clearMustChangePassword,
       signIn,
       signOut,
     }),
@@ -322,7 +352,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       isVisualizador,
       canEdit,
       canDelete,
+      mustChangePassword,
       clearError,
+      clearMustChangePassword,
       signIn,
       signOut,
     ]

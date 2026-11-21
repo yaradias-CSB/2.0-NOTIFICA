@@ -9,10 +9,11 @@ import { DataProvider } from './contexts/DataContext';
 import { EcosystemProvider } from './contexts/EcosystemContext';
 import { NotificationProvider } from './contexts/NotificationContext';
 import { LoginPage } from './components/LoginPage';
+import { ChangePasswordModal } from './components/ChangePasswordModal';
 import ErrorBoundary from './components/ui/ErrorBoundary';
 
 function AuthGate() {
-  const { session, user, profile, loading } = useAuth();
+  const { session, user, profile, loading, mustChangePassword } = useAuth();
 
   if (loading) {
     return (
@@ -27,6 +28,14 @@ function AuthGate() {
 
   if (!session || !user || !profile) {
     return <LoginPage />;
+  }
+
+  if (mustChangePassword) {
+    return (
+      <div className="min-h-screen min-h-[100dvh] bg-slate-950">
+        <ChangePasswordModal isOpen={true} forced={true} onClose={() => {}} />
+      </div>
+    );
   }
 
   return (
