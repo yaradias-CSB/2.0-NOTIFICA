@@ -57,9 +57,22 @@ export function getActiveAuthUser(): ActiveAuthUserSnapshot | null {
 export async function getAccessToken(): Promise<string | null> {
   if (!isSupabaseConfigured()) return null;
   try {
-    const { data, error } = await getSupabaseClient().auth.getSession();
+    const supabase = getSupabaseClient();
+    const { data, error } = await supabase.auth.getSession();
     if (error) return null;
-    return data.session?.access_token ?? null;
+    const session = data.session;
+    if (!session) return null;
+
+    const expiresAtMs =
+      typeof session.expires_at === 'number' ? session.expires_at * 1000 : null;
+    if (expiresAtMs !== null && expiresAtMs <= Date.now() + 30_000) {
+      const { data: refreshed, error: refreshError } = await supabase.auth.refreshSession();
+      if (!refreshError && refreshed.session?.access_token) {
+        return refreshed.session.access_token;
+      }
+    }
+
+    return session.access_token ?? null;
   } catch {
     return null;
   }
@@ -67,12 +80,38 @@ export async function getAccessToken(): Promise<string | null> {
 
 export async function authFetch(input: RequestInfo | URL, init: RequestInit = {}): Promise<Response> {
   const headers = new Headers(init.headers);
-  const token = await getAccessToken();
-  if (token && !headers.has('Authorization')) {
+  const hasExplicitAuth = headers.has('Authorization');
+  const token = hasExplicitAuth ? null : await getAccessToken();
+  if (token) {
     headers.set('Authorization', `Bearer ${token}`);
   }
-  return fetch(input, {
+
+  const response = await fetch(input, {
     ...init,
     headers,
   });
+
+  if (
+    response.status === 401 &&
+    !hasExplicitAuth &&
+    isSupabaseConfigured() &&
+    !(typeof ReadableStream !== 'undefined' && init.body instanceof ReadableStream)
+  ) {
+    try {
+      const { data: refreshed, error } = await getSupabaseClient().auth.refreshSession();
+      const refreshedToken = !error ? refreshed.session?.access_token : null;
+      if (refreshedToken && refreshedToken !== token) {
+        const retryHeaders = new Headers(init.headers);
+        retryHeaders.set('Authorization', `Bearer ${refreshedToken}`);
+        return fetch(input, {
+          ...init,
+          headers: retryHeaders,
+        });
+      }
+    } catch {
+      // Mantém a resposta 401 original se a renovação de sessão falhar
+    }
+  }
+
+  return response;
 }

@@ -117,13 +117,31 @@ function installMockFetch(baseServerUrl: string) {
 
     // Token user verification
     if (url.pathname === "/auth/v1/user") {
+      const apiKey = headers.get("apikey") || "";
+      if (apiKey === "wrong-anon-key-notifica-123456") {
+        return new Response(JSON.stringify({ message: "Invalid API key" }), { status: 401 });
+      }
       const token = (headers.get("Authorization") || "").replace(/^Bearer\s+/i, "");
       const tokenMap: Record<string, string> = {
         "token-admin": ADMIN_ID,
         "token-analyst": ANALYST_ID,
         "token-viewer": VIEWER_ID,
       };
-      const mappedId = tokenMap[token] || (token.startsWith("token-id:") ? token.slice("token-id:".length) : "");
+      let mappedId =
+        tokenMap[token] || (token.startsWith("token-id:") ? token.slice("token-id:".length) : "");
+      if (!mappedId && token.split(".").length === 3) {
+        try {
+          const payload = JSON.parse(Buffer.from(token.split(".")[1], "base64url").toString("utf8")) as {
+            sub?: string;
+            iss?: string;
+          };
+          if (payload?.sub && (!payload.iss || payload.iss.startsWith(url.origin))) {
+            mappedId = payload.sub;
+          }
+        } catch {
+          mappedId = "";
+        }
+      }
       const authRec = mockAuthUsers.find((u) => u.id === mappedId);
       if (!authRec) {
         return new Response(JSON.stringify({ error: "Invalid token" }), { status: 401 });
@@ -144,6 +162,10 @@ function installMockFetch(baseServerUrl: string) {
 
     // Password verification (/auth/v1/token?grant_type=password)
     if (url.pathname === "/auth/v1/token" && method === "POST") {
+      const apiKey = headers.get("apikey") || "";
+      if (apiKey === "wrong-anon-key-notifica-123456") {
+        return new Response(JSON.stringify({ message: "Invalid API key" }), { status: 401 });
+      }
       const email = String(body?.email || "").trim().toLowerCase();
       const password = String(body?.password || "");
       const found = mockAuthUsers.find((u) => u.email === email && u.password === password);
@@ -713,4 +735,110 @@ test("Compatibilidade legada: conta já marcada em user_metadata continua obriga
     headers: { Authorization: "Bearer token-analyst" },
   });
   assert.equal(allowedLegacyRes.status, 200);
+});
+
+test("Troca obrigatória diferencia token ausente/inválido, senha incorreta e falha de chave, e libera após troca", async () => {
+  // 1. Sem token ou com token inválido/expirado em /api/auth/change-password continua bloqueado (401)
+  const noTokenRes = await originalFetch(`${baseUrl}/api/auth/change-password`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ currentPassword: "@12345", newPassword: "NovaSenhaValida#1" }),
+  });
+  assert.equal(noTokenRes.status, 401);
+
+  const emptyBearerRes = await originalFetch(`${baseUrl}/api/auth/change-password`, {
+    method: "POST",
+    headers: {
+      Authorization: "Bearer   ",
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ currentPassword: "@12345", newPassword: "NovaSenhaValida#1" }),
+  });
+  assert.equal(emptyBearerRes.status, 401);
+
+  const invalidTokenRes = await originalFetch(`${baseUrl}/api/auth/change-password`, {
+    method: "POST",
+    headers: {
+      Authorization: "Bearer token-invalido-ou-expirado",
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ currentPassword: "@12345", newPassword: "NovaSenhaValida#1" }),
+  });
+  assert.equal(invalidTokenRes.status, 401);
+  const invalidTokenBody = (await invalidTokenRes.json()) as { error?: string };
+  assert.equal(invalidTokenBody.error, "Sessão inválida ou expirada.");
+
+  // 2. Conta nova com troca obrigatória + token JWT válido (mesmo se NOTIFICA_SUPABASE_ANON_KEY estiver divergente)
+  const createRes = await originalFetch(`${baseUrl}/api/users`, {
+    method: "POST",
+    headers: {
+      Authorization: "Bearer token-admin",
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      nome: "Conta Nova Modal",
+      email: "contanova@sema.mt.gov.br",
+      perfil: "Analista",
+    }),
+  });
+  assert.equal(createRes.status, 201);
+  const created = (await createRes.json()) as { user: MockPerfilRow };
+  const newId = created.user.id;
+
+  const headerB64 = Buffer.from(JSON.stringify({ alg: "HS256", typ: "JWT" })).toString("base64url");
+  const payloadB64 = Buffer.from(
+    JSON.stringify({
+      sub: newId,
+      iss: `${process.env.NOTIFICA_SUPABASE_URL}/auth/v1`,
+    })
+  ).toString("base64url");
+  const sessionJwt = `${headerB64}.${payloadB64}.sig`;
+
+  const prevAnon = process.env.NOTIFICA_SUPABASE_ANON_KEY;
+  process.env.NOTIFICA_SUPABASE_ANON_KEY = "wrong-anon-key-notifica-123456";
+  try {
+    // Outras rotas bloqueadas com 403 PASSWORD_CHANGE_REQUIRED (não 401)
+    const blockedNormalRes = await originalFetch(`${baseUrl}/api/ecosystem/status`, {
+      headers: { Authorization: `Bearer ${sessionJwt}` },
+    });
+    assert.equal(blockedNormalRes.status, 403);
+
+    // Senha atual incorreta retorna 400 próprio, NÃO erro de sessão (401)
+    const wrongCurrentRes = await originalFetch(`${baseUrl}/api/auth/change-password`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${sessionJwt}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        currentPassword: "senha-atual-errada",
+        newPassword: "NovaSenhaPessoal#9",
+      }),
+    });
+    assert.equal(wrongCurrentRes.status, 400);
+    const wrongCurrentBody = (await wrongCurrentRes.json()) as { error?: string };
+    assert.equal(wrongCurrentBody.error, "Senha atual incorreta.");
+
+    // Senha atual correta conclui a troca obrigatória e libera o acesso
+    const changeOkRes = await originalFetch(`${baseUrl}/api/auth/change-password`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${sessionJwt}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        currentPassword: "@12345",
+        newPassword: "NovaSenhaPessoal#9",
+      }),
+    });
+    assert.equal(changeOkRes.status, 200);
+    assert.equal(mockAuthUsers.find((u) => u.id === newId)?.app_metadata?.must_change_password, false);
+
+    const unlockedRes = await originalFetch(`${baseUrl}/api/ecosystem/status`, {
+      headers: { Authorization: `Bearer ${sessionJwt}` },
+    });
+    assert.equal(unlockedRes.status, 200);
+  } finally {
+    process.env.NOTIFICA_SUPABASE_ANON_KEY = prevAnon;
+  }
 });

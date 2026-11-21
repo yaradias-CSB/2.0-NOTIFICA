@@ -32,6 +32,8 @@ interface AuthenticatedUser {
   email: string;
   nome: string;
   perfil: UserRole;
+  authBaseUrl?: string;
+  authApiKey?: string;
 }
 
 type AuthenticatedRequest = express.Request & {
@@ -50,23 +52,125 @@ function normalizeUserRole(raw: unknown): UserRole | null {
   return null;
 }
 
+function normalizeSupabaseAuthBaseUrl(raw?: string): string {
+  const trimmed = String(raw || "").trim();
+  if (!trimmed || !/^https?:\/\//i.test(trimmed) || trimmed.includes("placeholder")) {
+    return "";
+  }
+  return trimmed.replace(/\/rest\/v1\/?$/i, "").replace(/\/+$/, "");
+}
+
+function normalizeSupabaseApiKey(raw?: string): string {
+  const trimmed = String(raw || "").trim();
+  if (!trimmed || trimmed.includes("placeholder") || trimmed.length <= 10) {
+    return "";
+  }
+  return trimmed;
+}
+
+function extractJwtIssuerBaseUrl(token: string): string {
+  const parts = token.split(".");
+  if (parts.length !== 3) return "";
+  try {
+    const json = Buffer.from(parts[1], "base64url").toString("utf8");
+    const parsed = JSON.parse(json) as { iss?: unknown };
+    if (typeof parsed?.iss !== "string") return "";
+    return normalizeSupabaseAuthBaseUrl(parsed.iss.replace(/\/auth\/v1\/?$/i, ""));
+  } catch {
+    return "";
+  }
+}
+
 function getNotificaAuthBaseUrl(notificaCfg: RemoteServiceConfig | null): string {
-  const raw =
-    process.env.NOTIFICA_SUPABASE_URL?.trim() ||
-    notificaCfg?.endpoint ||
-    process.env.VITE_SUPABASE_URL?.trim() ||
-    "";
-  return raw.replace(/\/rest\/v1\/?$/i, "").replace(/\/+$/, "");
+  return (
+    normalizeSupabaseAuthBaseUrl(process.env.NOTIFICA_SUPABASE_URL) ||
+    normalizeSupabaseAuthBaseUrl(notificaCfg?.endpoint) ||
+    normalizeSupabaseAuthBaseUrl(process.env.VITE_SUPABASE_URL) ||
+    ""
+  );
 }
 
 function getNotificaAuthApiKey(notificaCfg: RemoteServiceConfig | null): string {
   return (
-    process.env.NOTIFICA_SUPABASE_ANON_KEY?.trim() ||
-    process.env.VITE_SUPABASE_ANON_KEY?.trim() ||
-    process.env.NOTIFICA_SUPABASE_SERVICE_ROLE_KEY?.trim() ||
-    notificaCfg?.token ||
+    normalizeSupabaseApiKey(process.env.NOTIFICA_SUPABASE_ANON_KEY) ||
+    normalizeSupabaseApiKey(process.env.VITE_SUPABASE_ANON_KEY) ||
+    normalizeSupabaseApiKey(process.env.NOTIFICA_SUPABASE_SERVICE_ROLE_KEY) ||
+    normalizeSupabaseApiKey(notificaCfg?.token) ||
     ""
   );
+}
+
+interface SupabaseAuthTarget {
+  baseUrl: string;
+  apiKeys: string[];
+}
+
+function resolveSupabaseAuthTargets(
+  notificaCfg: RemoteServiceConfig | null,
+  token: string
+): SupabaseAuthTarget[] {
+  const notificaBaseUrl =
+    normalizeSupabaseAuthBaseUrl(process.env.NOTIFICA_SUPABASE_URL) ||
+    normalizeSupabaseAuthBaseUrl(notificaCfg?.endpoint);
+  const viteBaseUrl = normalizeSupabaseAuthBaseUrl(process.env.VITE_SUPABASE_URL);
+
+  const notificaAnonKey = normalizeSupabaseApiKey(process.env.NOTIFICA_SUPABASE_ANON_KEY);
+  const viteAnonKey = normalizeSupabaseApiKey(process.env.VITE_SUPABASE_ANON_KEY);
+  const notificaServiceKey = normalizeSupabaseApiKey(process.env.NOTIFICA_SUPABASE_SERVICE_ROLE_KEY);
+  const cfgToken = normalizeSupabaseApiKey(notificaCfg?.token);
+
+  const dedupeKeys = (keys: string[]) => Array.from(new Set(keys.filter(Boolean)));
+  const targets: SupabaseAuthTarget[] = [];
+
+  if (notificaBaseUrl && viteBaseUrl && notificaBaseUrl.toLowerCase() !== viteBaseUrl.toLowerCase()) {
+    const notificaKeys = dedupeKeys([notificaAnonKey, notificaServiceKey, cfgToken]);
+    const viteKeys = dedupeKeys([viteAnonKey, notificaAnonKey]);
+    if (notificaKeys.length > 0) {
+      targets.push({ baseUrl: notificaBaseUrl, apiKeys: notificaKeys });
+    }
+    if (viteKeys.length > 0) {
+      targets.push({ baseUrl: viteBaseUrl, apiKeys: viteKeys });
+    }
+  } else {
+    const singleBaseUrl = notificaBaseUrl || viteBaseUrl;
+    const singleKeys = dedupeKeys([notificaAnonKey, viteAnonKey, notificaServiceKey, cfgToken]);
+    if (singleBaseUrl && singleKeys.length > 0) {
+      targets.push({ baseUrl: singleBaseUrl, apiKeys: singleKeys });
+    }
+  }
+
+  const issuerBaseUrl = extractJwtIssuerBaseUrl(token);
+  if (issuerBaseUrl && targets.length > 1) {
+    targets.sort((a, b) => {
+      const aMatch = a.baseUrl.toLowerCase() === issuerBaseUrl.toLowerCase() ? 0 : 1;
+      const bMatch = b.baseUrl.toLowerCase() === issuerBaseUrl.toLowerCase() ? 0 : 1;
+      return aMatch - bMatch;
+    });
+  }
+
+  return targets;
+}
+
+async function readSupabaseAuthErrorMessage(res: globalThis.Response): Promise<string> {
+  try {
+    const text = await res.text();
+    if (!text) return "";
+    const parsed = JSON.parse(text) as Record<string, unknown>;
+    return String(
+      parsed?.msg ||
+      parsed?.message ||
+      parsed?.error_description ||
+      parsed?.error ||
+      ""
+    ).trim();
+  } catch {
+    return "";
+  }
+}
+
+function isSupabaseApiKeyError(status: number, message: string): boolean {
+  if (status !== 401 && status !== 403) return false;
+  return /invalid api key|no api key|apikey/i.test(message);
 }
 
 function canViewFullDocument(req: express.Request): boolean {
@@ -922,6 +1026,7 @@ app.get("/api/health", (_req, res) => {
 
 async function requireAuth(req: express.Request, res: express.Response, next: express.NextFunction) {
   const cleanPath = (req.originalUrl || req.url || "").split("?")[0].replace(/\/+$/, "");
+  const routePath = `${req.baseUrl || ""}${req.path || ""}`.replace(/\/+$/, "");
   if (cleanPath === "/api/health" || req.path === "/health") {
     return next();
   }
@@ -936,39 +1041,83 @@ async function requireAuth(req: express.Request, res: express.Response, next: ex
   }
 
   const notificaCfg = getServiceConfig("NOTIFICA");
-  const authBaseUrl = getNotificaAuthBaseUrl(notificaCfg);
-  const authApiKey = getNotificaAuthApiKey(notificaCfg);
+  const authTargets = resolveSupabaseAuthTargets(notificaCfg, token);
+  const fallbackAuthBaseUrl = getNotificaAuthBaseUrl(notificaCfg);
+  const fallbackAuthApiKey = getNotificaAuthApiKey(notificaCfg);
 
-  if (!authBaseUrl || !authApiKey || !notificaCfg) {
+  if (!notificaCfg || (authTargets.length === 0 && (!fallbackAuthBaseUrl || !fallbackAuthApiKey))) {
     return res.status(403).json({ error: "Serviço de autenticação do Notifica não configurado." });
   }
+
+  const target = authTargets[0] || { baseUrl: fallbackAuthBaseUrl, apiKeys: [fallbackAuthApiKey] };
 
   let email = "";
   let authUserId = "";
   let mustChangePassword = false;
+  let validatedAuthBaseUrl = target.baseUrl;
+  let validatedAuthApiKey = target.apiKeys[0] || "";
+
   try {
-    const authRes = await fetch(`${authBaseUrl}/auth/v1/user`, {
-      method: "GET",
-      headers: {
-        apikey: authApiKey,
-        Authorization: `Bearer ${token}`,
-      },
-      signal: AbortSignal.timeout(8000),
-    });
-    if (!authRes.ok) {
-      return res.status(401).json({ error: "Sessão inválida ou expirada." });
-    }
-    const authUser = (await authRes.json()) as {
+    let authenticatedUser: {
       id?: string;
       email?: string;
       app_metadata?: Record<string, unknown>;
       user_metadata?: Record<string, unknown>;
-    };
-    email = String(authUser?.email || "").trim().toLowerCase();
-    authUserId = String(authUser?.id || "");
+    } | null = null;
+    let lastErrorStatus = 401;
+    let lastErrorMsg = "";
+    let sawApiKeyError = false;
+
+    for (const candidateKey of target.apiKeys) {
+      const authRes = await fetch(`${target.baseUrl}/auth/v1/user`, {
+        method: "GET",
+        headers: {
+          apikey: candidateKey,
+          Authorization: `Bearer ${token}`,
+        },
+        signal: AbortSignal.timeout(8000),
+      });
+
+      if (authRes.ok) {
+        authenticatedUser = (await authRes.json()) as {
+          id?: string;
+          email?: string;
+          app_metadata?: Record<string, unknown>;
+          user_metadata?: Record<string, unknown>;
+        };
+        validatedAuthApiKey = candidateKey;
+        break;
+      }
+
+      lastErrorStatus = authRes.status;
+      lastErrorMsg = await readSupabaseAuthErrorMessage(authRes);
+      if (isSupabaseApiKeyError(authRes.status, lastErrorMsg)) {
+        sawApiKeyError = true;
+        continue;
+      }
+
+      if (authRes.status >= 500) {
+        return res.status(502).json({ error: "Serviço de autenticação temporariamente indisponível." });
+      }
+
+      return res.status(401).json({ error: "Sessão inválida ou expirada." });
+    }
+
+    if (!authenticatedUser) {
+      if (sawApiKeyError) {
+        return res.status(503).json({ error: "Chave de autenticação do Supabase inválida no servidor." });
+      }
+      if (lastErrorStatus >= 500) {
+        return res.status(502).json({ error: "Serviço de autenticação temporariamente indisponível." });
+      }
+      return res.status(401).json({ error: "Sessão inválida ou expirada." });
+    }
+
+    email = String(authenticatedUser?.email || "").trim().toLowerCase();
+    authUserId = String(authenticatedUser?.id || "");
     mustChangePassword = Boolean(
-      authUser?.app_metadata?.must_change_password ||
-      authUser?.user_metadata?.must_change_password
+      authenticatedUser?.app_metadata?.must_change_password ||
+      authenticatedUser?.user_metadata?.must_change_password
     );
     if (!email) {
       return res.status(401).json({ error: "Usuário autenticado sem e-mail válido." });
@@ -1015,9 +1164,13 @@ async function requireAuth(req: express.Request, res: express.Response, next: ex
     email,
     nome: String(matched.nome || email).trim(),
     perfil,
+    authBaseUrl: validatedAuthBaseUrl,
+    authApiKey: validatedAuthApiKey,
   };
 
-  if (mustChangePassword && cleanPath !== "/api/auth/change-password") {
+  const isPasswordChangeRoute =
+    cleanPath === "/api/auth/change-password" || routePath === "/api/auth/change-password";
+  if (mustChangePassword && !isPasswordChangeRoute) {
     return res.status(403).json({
       error: "Troca de senha obrigatória no primeiro acesso antes de continuar.",
       code: "PASSWORD_CHANGE_REQUIRED",
@@ -2912,6 +3065,7 @@ function getNotificaServiceRoleConfig(): {
     process.env.NOTIFICA_SUPABASE_URL?.trim() ||
     process.env.NOTIFICA_SERVICE_ENDPOINT?.trim() ||
     process.env.NOTIFICA_DB_URL?.trim() ||
+    process.env.VITE_SUPABASE_URL?.trim() ||
     ""
   )
     .replace(/\/rest\/v1\/?$/i, "")
@@ -3127,23 +3281,57 @@ app.post("/api/auth/change-password", async (req, res) => {
     return res.status(503).json({ error: "Serviço administrativo de autenticação não configurado no servidor." });
   }
 
-  const authApiKey = getNotificaAuthApiKey(getServiceConfig("NOTIFICA")) || serviceCfg.serviceRoleKey;
+  const verifyBaseUrl = authUser.authBaseUrl || serviceCfg.authBaseUrl;
+  const verifyApiKeys = Array.from(
+    new Set(
+      [
+        authUser.authApiKey,
+        getNotificaAuthApiKey(getServiceConfig("NOTIFICA")),
+        serviceCfg.serviceRoleKey,
+      ].filter((key): key is string => Boolean(key))
+    )
+  );
 
   try {
-    const verifyRes = await fetch(`${serviceCfg.authBaseUrl}/auth/v1/token?grant_type=password`, {
-      method: "POST",
-      headers: {
-        apikey: authApiKey,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        email: authUser.email,
-        password: currentPassword,
-      }),
-      signal: AbortSignal.timeout(8000),
-    });
+    let passwordVerified = false;
+    let sawApiKeyError = false;
 
-    if (!verifyRes.ok) {
+    for (const candidateKey of verifyApiKeys) {
+      const verifyRes = await fetch(`${verifyBaseUrl}/auth/v1/token?grant_type=password`, {
+        method: "POST",
+        headers: {
+          apikey: candidateKey,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          email: authUser.email,
+          password: currentPassword,
+        }),
+        signal: AbortSignal.timeout(8000),
+      });
+
+      if (verifyRes.ok) {
+        passwordVerified = true;
+        break;
+      }
+
+      const errMsg = await readSupabaseAuthErrorMessage(verifyRes);
+      if (isSupabaseApiKeyError(verifyRes.status, errMsg)) {
+        sawApiKeyError = true;
+        continue;
+      }
+
+      if (verifyRes.status >= 500) {
+        return res.status(502).json({ error: "Não foi possível validar a senha atual." });
+      }
+
+      return res.status(400).json({ error: "Senha atual incorreta." });
+    }
+
+    if (!passwordVerified) {
+      if (sawApiKeyError) {
+        return res.status(503).json({ error: "Chave de autenticação do Supabase inválida no servidor." });
+      }
       return res.status(400).json({ error: "Senha atual incorreta." });
     }
   } catch {
