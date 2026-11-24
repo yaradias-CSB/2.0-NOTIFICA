@@ -25,8 +25,6 @@ import { logActivity } from '../lib/audit';
 import { authFetch } from '../lib/supabase';
 import { UserRole } from '../types';
 
-const DEFAULT_SUGGESTED_PASSWORD = '@12345';
-
 interface ManagedUser {
   id: string;
   email: string;
@@ -56,16 +54,14 @@ export const UserManagement: React.FC = () => {
   const [formNome, setFormNome] = useState('');
   const [formEmail, setFormEmail] = useState('');
   const [formPerfil, setFormPerfil] = useState<UserRole>('Analista');
-  const [formPassword, setFormPassword] = useState(DEFAULT_SUGGESTED_PASSWORD);
-  const [showFormPassword, setShowFormPassword] = useState(true);
   const [formActive, setFormActive] = useState(true);
   const [formError, setFormError] = useState<string | null>(null);
   const [savingForm, setSavingForm] = useState(false);
 
   // Reset password modal state
   const [resetTarget, setResetTarget] = useState<ManagedUser | null>(null);
-  const [resetPasswordValue, setResetPasswordValue] = useState(DEFAULT_SUGGESTED_PASSWORD);
-  const [showResetPassword, setShowResetPassword] = useState(true);
+  const [resetPasswordValue, setResetPasswordValue] = useState('');
+  const [showResetPassword, setShowResetPassword] = useState(false);
   const [resetError, setResetError] = useState<string | null>(null);
   const [resettingPassword, setResettingPassword] = useState(false);
 
@@ -120,8 +116,6 @@ export const UserManagement: React.FC = () => {
     setFormNome('');
     setFormEmail('');
     setFormPerfil('Analista');
-    setFormPassword(DEFAULT_SUGGESTED_PASSWORD);
-    setShowFormPassword(true);
     setFormActive(true);
     setFormError(null);
     setIsFormModalOpen(true);
@@ -132,8 +126,6 @@ export const UserManagement: React.FC = () => {
     setFormNome(target.nome);
     setFormEmail(target.email);
     setFormPerfil(target.perfil);
-    setFormPassword('');
-    setShowFormPassword(false);
     setFormActive(target.status === 'ativo');
     setFormError(null);
     setIsFormModalOpen(true);
@@ -156,12 +148,6 @@ export const UserManagement: React.FC = () => {
     }
 
     if (!editingUser) {
-      const effectivePassword = formPassword || DEFAULT_SUGGESTED_PASSWORD;
-      if (effectivePassword.length < 6 || effectivePassword.length > 128) {
-        setFormError('A senha inicial deve ter entre 6 e 128 caracteres.');
-        return;
-      }
-
       setSavingForm(true);
       try {
         const response = await authFetch('/api/users', {
@@ -172,7 +158,6 @@ export const UserManagement: React.FC = () => {
             email: emailTrimmed,
             perfil: formPerfil,
             status: formActive ? 'ativo' : 'inativo',
-            password: effectivePassword,
           }),
         });
         const payload = (await response.json().catch(() => ({}))) as {
@@ -182,11 +167,14 @@ export const UserManagement: React.FC = () => {
         };
 
         if (!response.ok || !payload.user) {
-          setFormError(payload.error || 'Não foi possível cadastrar o usuário.');
+          setFormError(
+            payload.error ||
+              'Criação direta de usuários bloqueada até a configuração de fluxo seguro por convite ou definição de senha pelo próprio usuário.'
+          );
           return;
         }
 
-        toast.success(payload.message || 'Usuário salvo e ativado no Supabase!');
+        toast.success(payload.message || 'Usuário salvo com sucesso!');
         void logActivity({
           action: 'USUARIO_CRIADO',
           details: `Usuário ${payload.user.email} (${payload.user.perfil}) criado com status ${payload.user.status}.`,
@@ -280,8 +268,8 @@ export const UserManagement: React.FC = () => {
 
   const openResetModal = (target: ManagedUser) => {
     setResetTarget(target);
-    setResetPasswordValue(DEFAULT_SUGGESTED_PASSWORD);
-    setShowResetPassword(true);
+    setResetPasswordValue('');
+    setShowResetPassword(false);
     setResetError(null);
   };
 
@@ -290,9 +278,9 @@ export const UserManagement: React.FC = () => {
     if (!resetTarget) return;
     setResetError(null);
 
-    const passwordToSet = resetPasswordValue || DEFAULT_SUGGESTED_PASSWORD;
+    const passwordToSet = resetPasswordValue;
     if (passwordToSet.length < 6 || passwordToSet.length > 128) {
-      setResetError('A senha deve ter entre 6 e 128 caracteres.');
+      setResetError('Informe uma nova senha válida (entre 6 e 128 caracteres).');
       return;
     }
 
@@ -769,41 +757,11 @@ export const UserManagement: React.FC = () => {
               </div>
 
               {!editingUser && (
-                <div className="space-y-1.5">
-                  <div className="flex items-center justify-between">
-                    <label htmlFor="um-password" className="block text-xs font-bold text-slate-700">
-                      Senha inicial
-                    </label>
-                    <button
-                      type="button"
-                      onClick={() => setFormPassword(DEFAULT_SUGGESTED_PASSWORD)}
-                      className="text-[11px] font-bold text-emerald-600 hover:text-emerald-700 cursor-pointer"
-                    >
-                      Usar sugerida ({DEFAULT_SUGGESTED_PASSWORD})
-                    </button>
-                  </div>
-                  <div className="relative">
-                    <KeyRound size={15} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
-                    <input
-                      id="um-password"
-                      type={showFormPassword ? 'text' : 'password'}
-                      value={formPassword}
-                      onChange={(e) => setFormPassword(e.target.value)}
-                      placeholder={DEFAULT_SUGGESTED_PASSWORD}
-                      className="w-full pl-10 pr-10 py-2.5 rounded-xl border border-slate-200 bg-slate-50 focus:bg-white focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/20 text-sm outline-none"
-                      disabled={savingForm}
-                    />
-                    <button
-                      type="button"
-                      onClick={() => setShowFormPassword((v) => !v)}
-                      className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 cursor-pointer"
-                    >
-                      {showFormPassword ? <EyeOff size={16} /> : <Eye size={16} />}
-                    </button>
-                  </div>
-                  <p className="text-[11px] text-slate-500">
-                    Senha sugerida padrão: <span className="font-mono font-bold text-slate-700">{DEFAULT_SUGGESTED_PASSWORD}</span> (mínimo 6 caracteres).
-                  </p>
+                <div className="p-3.5 rounded-2xl bg-amber-50 border border-amber-200 text-amber-900 text-xs font-semibold flex items-start gap-2">
+                  <AlertCircle size={16} className="shrink-0 mt-0.5 text-amber-600" />
+                  <span>
+                    A criação direta de usuários está temporariamente bloqueada até a configuração de um fluxo seguro por convite ou definição de senha pelo próprio usuário. Nenhuma conta é criada com senha padrão.
+                  </span>
                 </div>
               )}
 
@@ -819,7 +777,7 @@ export const UserManagement: React.FC = () => {
                 <input
                   type="checkbox"
                   checked={formActive}
-                  disabled={savingForm || Boolean(editingUser && isCurrentUser(editingUser))}
+                  disabled={!editingUser || savingForm || Boolean(editingUser && isCurrentUser(editingUser))}
                   onChange={(e) => setFormActive(e.target.checked)}
                   className="w-5 h-5 accent-emerald-600 rounded cursor-pointer disabled:cursor-not-allowed"
                 />
@@ -832,15 +790,15 @@ export const UserManagement: React.FC = () => {
                   disabled={savingForm}
                   className="px-4 py-2.5 rounded-xl border border-slate-200 text-slate-600 hover:bg-slate-50 text-xs font-bold cursor-pointer"
                 >
-                  Cancelar
+                  {editingUser ? 'Cancelar' : 'Fechar'}
                 </button>
                 <button
                   type="submit"
-                  disabled={savingForm}
-                  className="px-5 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 disabled:opacity-60 text-white text-xs font-black uppercase tracking-wider flex items-center gap-2 cursor-pointer"
+                  disabled={!editingUser || savingForm}
+                  className="px-5 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 disabled:cursor-not-allowed text-white text-xs font-black uppercase tracking-wider flex items-center gap-2 cursor-pointer"
                 >
                   {savingForm && <Loader2 size={14} className="animate-spin" />}
-                  <span>{editingUser ? 'Salvar alterações' : 'Salvar e ativar'}</span>
+                  <span>{editingUser ? 'Salvar alterações' : 'Criação bloqueada'}</span>
                 </button>
               </div>
             </form>
@@ -887,18 +845,9 @@ export const UserManagement: React.FC = () => {
               )}
 
               <div className="space-y-1.5">
-                <div className="flex items-center justify-between">
-                  <label htmlFor="um-reset-password" className="block text-xs font-bold text-slate-700">
-                    Nova senha para o usuário
-                  </label>
-                  <button
-                    type="button"
-                    onClick={() => setResetPasswordValue(DEFAULT_SUGGESTED_PASSWORD)}
-                    className="text-[11px] font-bold text-emerald-600 hover:text-emerald-700 cursor-pointer"
-                  >
-                    Restaurar padrão ({DEFAULT_SUGGESTED_PASSWORD})
-                  </button>
-                </div>
+                <label htmlFor="um-reset-password" className="block text-xs font-bold text-slate-700">
+                  Nova senha temporária para o usuário
+                </label>
                 <div className="relative">
                   <KeyRound size={15} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
                   <input
@@ -906,7 +855,7 @@ export const UserManagement: React.FC = () => {
                     type={showResetPassword ? 'text' : 'password'}
                     value={resetPasswordValue}
                     onChange={(e) => setResetPasswordValue(e.target.value)}
-                    placeholder={DEFAULT_SUGGESTED_PASSWORD}
+                    placeholder="Digite uma nova senha forte (mínimo 6 caracteres)"
                     className="w-full pl-10 pr-10 py-2.5 rounded-xl border border-slate-200 bg-slate-50 focus:bg-white focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/20 text-sm outline-none"
                     disabled={resettingPassword}
                   />
@@ -919,7 +868,7 @@ export const UserManagement: React.FC = () => {
                   </button>
                 </div>
                 <p className="text-[11px] text-slate-500">
-                  Senha sugerida: <span className="font-mono font-bold text-slate-700">{DEFAULT_SUGGESTED_PASSWORD}</span>. Oriente o usuário a trocar a senha após entrar.
+                  O usuário será obrigado a definir uma nova senha pessoal no próximo acesso.
                 </p>
               </div>
 

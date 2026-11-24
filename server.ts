@@ -1,6 +1,7 @@
 import express from "express";
 import dotenv from "dotenv";
 import crypto from "crypto";
+import { createSolicitacoesVistoriaRouter } from "./server/solicitacoesVistoria";
 
 dotenv.config();
 
@@ -14,6 +15,7 @@ app.use((_req, res, next) => {
   res.setHeader("Referrer-Policy", "strict-origin-when-cross-origin");
   res.setHeader("Permissions-Policy", "camera=(), microphone=(), geolocation=()");
   res.setHeader("X-XSS-Protection", "0");
+  res.setHeader("X-Robots-Tag", "noindex, nofollow, noarchive");
   next();
 });
 
@@ -90,12 +92,10 @@ function getNotificaAuthBaseUrl(notificaCfg: RemoteServiceConfig | null): string
   );
 }
 
-function getNotificaAuthApiKey(notificaCfg: RemoteServiceConfig | null): string {
+function getNotificaAuthApiKey(): string {
   return (
     normalizeSupabaseApiKey(process.env.NOTIFICA_SUPABASE_ANON_KEY) ||
     normalizeSupabaseApiKey(process.env.VITE_SUPABASE_ANON_KEY) ||
-    normalizeSupabaseApiKey(process.env.NOTIFICA_SUPABASE_SERVICE_ROLE_KEY) ||
-    normalizeSupabaseApiKey(notificaCfg?.token) ||
     ""
   );
 }
@@ -116,14 +116,12 @@ function resolveSupabaseAuthTargets(
 
   const notificaAnonKey = normalizeSupabaseApiKey(process.env.NOTIFICA_SUPABASE_ANON_KEY);
   const viteAnonKey = normalizeSupabaseApiKey(process.env.VITE_SUPABASE_ANON_KEY);
-  const notificaServiceKey = normalizeSupabaseApiKey(process.env.NOTIFICA_SUPABASE_SERVICE_ROLE_KEY);
-  const cfgToken = normalizeSupabaseApiKey(notificaCfg?.token);
 
   const dedupeKeys = (keys: string[]) => Array.from(new Set(keys.filter(Boolean)));
   const targets: SupabaseAuthTarget[] = [];
 
   if (notificaBaseUrl && viteBaseUrl && notificaBaseUrl.toLowerCase() !== viteBaseUrl.toLowerCase()) {
-    const notificaKeys = dedupeKeys([notificaAnonKey, notificaServiceKey, cfgToken]);
+    const notificaKeys = dedupeKeys([notificaAnonKey, viteAnonKey]);
     const viteKeys = dedupeKeys([viteAnonKey, notificaAnonKey]);
     if (notificaKeys.length > 0) {
       targets.push({ baseUrl: notificaBaseUrl, apiKeys: notificaKeys });
@@ -133,7 +131,7 @@ function resolveSupabaseAuthTargets(
     }
   } else {
     const singleBaseUrl = notificaBaseUrl || viteBaseUrl;
-    const singleKeys = dedupeKeys([notificaAnonKey, viteAnonKey, notificaServiceKey, cfgToken]);
+    const singleKeys = dedupeKeys([notificaAnonKey, viteAnonKey]);
     if (singleBaseUrl && singleKeys.length > 0) {
       targets.push({ baseUrl: singleBaseUrl, apiKeys: singleKeys });
     }
@@ -1043,7 +1041,7 @@ async function requireAuth(req: express.Request, res: express.Response, next: ex
   const notificaCfg = getServiceConfig("NOTIFICA");
   const authTargets = resolveSupabaseAuthTargets(notificaCfg, token);
   const fallbackAuthBaseUrl = getNotificaAuthBaseUrl(notificaCfg);
-  const fallbackAuthApiKey = getNotificaAuthApiKey(notificaCfg);
+  const fallbackAuthApiKey = getNotificaAuthApiKey();
 
   if (!notificaCfg || (authTargets.length === 0 && (!fallbackAuthBaseUrl || !fallbackAuthApiKey))) {
     return res.status(403).json({ error: "Serviço de autenticação do Notifica não configurado." });
@@ -1710,6 +1708,9 @@ function formatGmsString(part: { g?: string; m?: string; s?: string } | undefine
   return `${g || "0"}°${(m || "00").padStart(2, "0")}'${s || "00"}"`;
 }
 
+const ADMINISTRA_WRITE_BLOCKED_MESSAGE =
+  "Escritas na base do Administra estão temporariamente indisponíveis até a liberação da API oficial com validação híbrida. O cadastro/alteração no Administra não foi realizado.";
+
 app.post("/api/registry/empreendedores", requireRole(["Administrador", "Analista"]), async (req, res) => {
   const authUser = getSessionIdentity(req);
   if (!authUser) {
@@ -1720,57 +1721,12 @@ app.post("/api/registry/empreendedores", requireRole(["Administrador", "Analista
     });
   }
 
-  const cfg = getServiceConfig("CENTRAL");
-  if (!cfg) {
-    return res.status(503).json({
-      remoteEnabled: false,
-      synced: false,
-      error: "Integração com o Administra não configurada no servidor.",
-    });
-  }
-
-  const body = req.body || {};
-  const now = new Date().toISOString();
-  const cpfDigits = normalizeDigits(body.cpfCnpjNormalizado || body.cpfCnpj);
-  const authorName = getAuthorDisplayName(authUser);
-  const payload = sanitizeFlatRow({
-    id: body.id,
-    nome: body.nome,
-    razao_social: body.tipoPessoa === "CNPJ" ? body.nome : undefined,
-    tipo_pessoa: body.tipoPessoa || (cpfDigits.length === 14 ? "CNPJ" : "CPF"),
-    cpf_cnpj: cpfDigits ? formatCpfCnpj(cpfDigits) : body.cpfCnpj,
-    cpf_cnpj_normalizado: cpfDigits || undefined,
-    telefone: body.telefone,
-    email: body.email,
-    logradouro: body.logradouro,
-    endereco: body.logradouro,
-    numero: body.numero,
-    complemento: body.complemento,
-    bairro: body.bairro,
-    municipio: body.municipio,
-    uf: body.uf || "MT",
-    cep: body.cep,
-    car_mt: body.carMt,
-    situacao: "ativo",
-    source_system: body.sourceSystem || "NOTIFICA",
-    created_by_analyst: authorName,
-    created_at: body.createdAt || now,
-    updated_at: now,
-  });
-
-  const result = await upsertDocumentWithColumnFallback(cfg, "empreendedores", payload);
-  if (!result.ok) {
-    return res.status(502).json({
-      remoteEnabled: true,
-      synced: false,
-      error: "Falha ao gravar empreendedor na base remota do Administra.",
-    });
-  }
-
-  return res.json({
-    remoteEnabled: true,
-    synced: true,
-    item: mapRemoteEmpreendedor(result.item, "ADMINISTRA"),
+  return res.status(409).json({
+    remoteEnabled: false,
+    synced: false,
+    blocked: true,
+    code: "ADMINISTRA_WRITE_BLOCKED",
+    error: ADMINISTRA_WRITE_BLOCKED_MESSAGE,
   });
 });
 
@@ -1784,78 +1740,12 @@ app.post("/api/registry/barragens", requireRole(["Administrador", "Analista"]), 
     });
   }
 
-  const cfg = getServiceConfig("CENTRAL");
-  if (!cfg) {
-    return res.status(503).json({
-      remoteEnabled: false,
-      synced: false,
-      error: "Integração com o Administra não configurada no servidor.",
-    });
-  }
-
-  const body = req.body || {};
-  const now = new Date().toISOString();
-  const authorName = getAuthorDisplayName(authUser);
-  const latDec = gmsPartToDecimal(body.coordenadasGMS?.lat, true);
-  const lngDec = gmsPartToDecimal(body.coordenadasGMS?.long, true);
-  const latGms = formatGmsString(body.coordenadasGMS?.lat);
-  const longGms = formatGmsString(body.coordenadasGMS?.long);
-
-  const payload = sanitizeFlatRow({
-    id: body.id,
-    empreendedor_id: body.empreendedorId || null,
-    empreendedor: body.empreendedorNome,
-    empreendedor_nome: body.empreendedorNome,
-    empreendedor_cpf_cnpj: body.empreendedorCpfCnpj,
-    nome: body.nomeBarragem,
-    nome_barragem: body.nomeBarragem,
-    empreendimento: body.nomeBarragem,
-    snisb: body.codigoSnisb,
-    codigo_snisb: body.codigoSnisb,
-    processo: body.processoReferencia,
-    processo_referencia: body.processoReferencia,
-    municipio: body.municipio,
-    uf: body.uf || "MT",
-    curso_agua: body.cursoAguaBarrado,
-    curso_agua_barrado: body.cursoAguaBarrado,
-    uso_preponderante: body.usoPreponderante,
-    situacao: body.situacaoEmpreendimento,
-    situacao_empreendimento: body.situacaoEmpreendimento,
-    tipo_barragem: body.tipoBarragem,
-    latitude: latDec,
-    longitude: lngDec,
-    lat_gms: latGms,
-    long_gms: longGms,
-    altura: body.altura,
-    volume: body.volume,
-    largura_coroamento: body.larguraCoroamento,
-    comprimento_coroamento: body.comprimentoCoroamento,
-    classificacao_barragem: body.classificacaoBarragem,
-    dano_potencial: body.classificacaoDPA,
-    classificacao_dpa: body.classificacaoDPA,
-    categoria_risco: body.classificacaoCRI,
-    classificacao_cri: body.classificacaoCRI,
-    portaria_classificacao: body.portariaClassificacao,
-    parecer_classificacao: body.parecerClassificacao,
-    source_system: body.sourceSystem || "NOTIFICA",
-    created_by_analyst: authorName,
-    created_at: body.createdAt || now,
-    updated_at: now,
-  });
-
-  const result = await upsertDocumentWithColumnFallback(cfg, "barragens", payload);
-  if (!result.ok) {
-    return res.status(502).json({
-      remoteEnabled: true,
-      synced: false,
-      error: "Falha ao gravar barragem na base remota do Administra.",
-    });
-  }
-
-  return res.json({
-    remoteEnabled: true,
-    synced: true,
-    item: mapRemoteBarragem(result.item, "ADMINISTRA"),
+  return res.status(409).json({
+    remoteEnabled: false,
+    synced: false,
+    blocked: true,
+    code: "ADMINISTRA_WRITE_BLOCKED",
+    error: ADMINISTRA_WRITE_BLOCKED_MESSAGE,
   });
 });
 
@@ -1869,67 +1759,12 @@ app.post("/api/registry/rts", requireRole(["Administrador", "Analista"]), async 
     });
   }
 
-  const cfg = getServiceConfig("CENTRAL");
-  if (!cfg) {
-    return res.status(503).json({
-      remoteEnabled: false,
-      synced: false,
-      error: "Integração com o Administra não configurada no servidor.",
-    });
-  }
-
-  const body = req.body || {};
-  const now = new Date().toISOString();
-  const authorName = getAuthorDisplayName(authUser);
-  const payload = sanitizeFlatRow({
-    id: body.id,
-    nome: body.nome,
-    registro: body.registroProfissional,
-    registro_profissional: body.registroProfissional,
-    especialidades: body.formacaoProfissional,
-    formacao_profissional: body.formacaoProfissional,
-    art: body.art || undefined,
-    art_rrt: body.art || undefined,
-    cpf: body.cpf,
-    telefone: body.telefone,
-    email: body.email,
-    situacao: "ativo",
-    source_system: body.sourceSystem || "NOTIFICA",
-    created_by_analyst: authorName,
-    created_at: body.createdAt || now,
-    updated_at: now,
-  });
-
-  let result = await upsertDocumentWithColumnFallback(cfg, "rts", payload);
-  if (!result.ok) {
-    const legacyPayload = sanitizeFlatRow({
-      id: body.id,
-      nome: body.nome,
-      registro_profissional: body.registroProfissional,
-      formacao_profissional: body.formacaoProfissional,
-      cpf: body.cpf,
-      telefone: body.telefone,
-      email: body.email,
-      source_system: body.sourceSystem || "NOTIFICA",
-      created_by_analyst: authorName,
-      created_at: body.createdAt || now,
-      updated_at: now,
-    });
-    result = await upsertDocumentWithColumnFallback(cfg, "responsaveis_tecnicos", legacyPayload);
-  }
-
-  if (!result.ok) {
-    return res.status(502).json({
-      remoteEnabled: true,
-      synced: false,
-      error: "Falha ao gravar responsável técnico na base remota do Administra.",
-    });
-  }
-
-  return res.json({
-    remoteEnabled: true,
-    synced: true,
-    item: mapRemoteRT(result.item, "ADMINISTRA"),
+  return res.status(409).json({
+    remoteEnabled: false,
+    synced: false,
+    blocked: true,
+    code: "ADMINISTRA_WRITE_BLOCKED",
+    error: ADMINISTRA_WRITE_BLOCKED_MESSAGE,
   });
 });
 
@@ -1939,148 +1774,35 @@ app.post("/api/registry/rts/link-art", requireRole(["Administrador", "Analista"]
     return res.status(401).json({ remoteEnabled: false, synced: false, error: "Usuário não autenticado." });
   }
 
-  const cfg = getServiceConfig("CENTRAL");
-  const body = req.body || {};
-  const art = String(body.art || "").trim();
-  const rtNome = String(body.rtNome || "").trim();
-  if (!art || !rtNome) {
-    return res.status(400).json({ remoteEnabled: Boolean(cfg), synced: false, error: "Informe o nome do RT e o número da ART." });
-  }
-
-  if (!cfg) {
-    return res.status(503).json({
-      remoteEnabled: false,
-      synced: false,
-      error: "Integração com o Administra não configurada no servidor.",
-    });
-  }
-
-  const now = new Date().toISOString();
-  const authorName = getAuthorDisplayName(authUser);
-  const rtId = String(body.rtId || `rt_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`);
-
-  const rtPayload = sanitizeFlatRow({
-    id: rtId,
-    nome: rtNome,
-    registro: body.registroProfissional,
-    especialidades: body.formacaoProfissional,
-    cpf: body.cpf,
-    art,
-    art_rrt: art,
-    barragem_vinculada: body.barragemNome || body.empreendedorNome || undefined,
-    created_by_analyst: authorName,
-    updated_at: now,
-  });
-
-  const rtResult = await upsertDocumentWithColumnFallback(cfg, "rts", rtPayload);
-
-  const linkId = `rt_art_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
-  const obsParts = [
-    body.empreendedorNome ? `Empreendedor: ${body.empreendedorNome}` : "",
-    body.barragemNome ? `Empreendimento/Barragem: ${body.barragemNome}` : "",
-  ].filter(Boolean);
-
-  const linkPayload = sanitizeFlatRow({
-    id: linkId,
-    rt_id: rtResult.ok && rtResult.item?.id ? String(rtResult.item.id) : rtId,
-    barragem_id: body.barragemId || null,
-    nome: rtNome,
-    art,
-    art_rrt: art,
-    conselho: body.registroProfissional || undefined,
-    processo: body.processo || undefined,
-    situacao: "ativo",
-    observacoes: obsParts.join(" | ") || undefined,
-    created_by_analyst: authorName,
-    created_at: now,
-  });
-
-  let linkResult = await upsertDocumentWithColumnFallback(cfg, "responsaveis_tecnicos_barragens", linkPayload);
-  if (!linkResult.ok && linkPayload.barragem_id) {
-    linkPayload.barragem_id = null;
-    linkResult = await upsertDocumentWithColumnFallback(cfg, "responsaveis_tecnicos_barragens", linkPayload);
-  }
-
-  const mappedRt = rtResult.ok
-    ? mapRemoteRT(rtResult.item, "ADMINISTRA")
-    : mapRemoteRT(
-        {
-          id: rtId,
-          nome: rtNome,
-          registro: body.registroProfissional,
-          especialidades: body.formacaoProfissional,
-          cpf: body.cpf,
-          art,
-          art_rrt: art,
-          created_by_analyst: authorName,
-        },
-        "ADMINISTRA"
-      );
-
-  mappedRt.art = art;
-  mappedRt.artsVinculadas = [
-    {
-      id: String(linkResult.item?.id || linkId),
-      art,
-      barragemId: body.barragemId || undefined,
-      barragemNome: body.barragemNome || undefined,
-      empreendedorId: body.empreendedorId || undefined,
-      empreendedorNome: body.empreendedorNome || undefined,
-      processo: body.processo || undefined,
-      situacao: "ativo",
-      createdAt: now,
-    },
-  ];
-
-  if (!rtResult.ok && !linkResult.ok) {
-    return res.status(502).json({
-      remoteEnabled: true,
-      synced: false,
-      error: "Falha ao gravar vínculo de ART na base remota do Administra.",
-    });
-  }
-
-  return res.json({
-    remoteEnabled: true,
-    synced: true,
-    item: mappedRt,
+  return res.status(409).json({
+    remoteEnabled: false,
+    synced: false,
+    blocked: true,
+    code: "ADMINISTRA_WRITE_BLOCKED",
+    error: ADMINISTRA_WRITE_BLOCKED_MESSAGE,
   });
 });
 
 const ALLOWED_REGISTRY_TABLES = new Set(["empreendedores", "barragens", "rts", "responsaveis_tecnicos"]);
 
 app.delete("/api/registry/:kind/:id", requireRole(["Administrador"]), async (req, res) => {
+  const authUser = getSessionIdentity(req);
+  if (!authUser) {
+    return res.status(401).json({ remoteEnabled: false, deleted: false, error: "Usuário não autenticado." });
+  }
+
   const { kind, id } = req.params;
   if (!ALLOWED_REGISTRY_TABLES.has(kind) || !id) {
     return res.status(400).json({ remoteEnabled: false, deleted: false, error: "Parâmetros inválidos." });
   }
-  const cfg = getServiceConfig("CENTRAL");
-  if (!cfg) {
-    return res.status(503).json({
-      remoteEnabled: false,
-      deleted: false,
-      error: "Integração com o Administra não configurada no servidor.",
-    });
-  }
-  const targetTable = kind === "responsaveis_tecnicos" ? "rts" : kind;
-  let result = await remoteRestRequest(cfg, targetTable, {
-    method: "DELETE",
-    query: `id=eq.${encodeURIComponent(id)}`,
+
+  return res.status(409).json({
+    remoteEnabled: false,
+    deleted: false,
+    blocked: true,
+    code: "ADMINISTRA_WRITE_BLOCKED",
+    error: ADMINISTRA_WRITE_BLOCKED_MESSAGE,
   });
-  if (!result.ok && kind === "responsaveis_tecnicos") {
-    result = await remoteRestRequest(cfg, "responsaveis_tecnicos", {
-      method: "DELETE",
-      query: `id=eq.${encodeURIComponent(id)}`,
-    });
-  }
-  if (!result.ok) {
-    return res.status(502).json({
-      remoteEnabled: true,
-      deleted: false,
-      error: "Falha ao excluir registro na base remota do Administra.",
-    });
-  }
-  return res.json({ remoteEnabled: true, deleted: true });
 });
 
 // Notifica CSB Document Persistence Proxy (lean flat columns only)
@@ -3045,7 +2767,8 @@ app.patch("/api/pendencias/:id", requireRole(["Administrador", "Analista"]), asy
 // Gestão de Usuários (Somente Administrador) e Troca de Senha (Todo Usuário)
 // ============================================================================
 
-const DEFAULT_SUGGESTED_USER_PASSWORD = "@12345";
+const USER_CREATION_BLOCKED_MESSAGE =
+  "Criação direta de usuários temporariamente bloqueada até a configuração de fluxo seguro por convite ou definição de senha pelo próprio usuário.";
 const USER_EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
 
 interface SupabaseAdminAuthUser {
@@ -3286,11 +3009,15 @@ app.post("/api/auth/change-password", async (req, res) => {
     new Set(
       [
         authUser.authApiKey,
-        getNotificaAuthApiKey(getServiceConfig("NOTIFICA")),
-        serviceCfg.serviceRoleKey,
+        normalizeSupabaseApiKey(process.env.NOTIFICA_SUPABASE_ANON_KEY),
+        normalizeSupabaseApiKey(process.env.VITE_SUPABASE_ANON_KEY),
       ].filter((key): key is string => Boolean(key))
     )
   );
+
+  if (verifyApiKeys.length === 0) {
+    return res.status(503).json({ error: "Chave anon de autenticação do Supabase não configurada no servidor." });
+  }
 
   try {
     let passwordVerified = false;
@@ -3405,163 +3132,15 @@ app.get("/api/users", requireRole(["Administrador"]), async (_req, res) => {
 });
 
 app.post("/api/users", requireRole(["Administrador"]), async (req, res) => {
-  const serviceCfg = getNotificaServiceRoleConfig();
-  if (!serviceCfg) {
-    return res.status(503).json({
-      error: "Chave administrativa do Supabase (service_role) não configurada no servidor.",
-    });
+  const authUser = getSessionIdentity(req);
+  if (!authUser) {
+    return res.status(401).json({ error: "Usuário não autenticado." });
   }
 
-  const body = req.body && typeof req.body === "object" ? (req.body as Record<string, unknown>) : null;
-  if (!body) {
-    return res.status(400).json({ error: "Corpo da requisição inválido." });
-  }
-
-  const nome = sanitizeUserName(body.nome);
-  const email = String(body.email || "").trim().toLowerCase();
-  const perfil = normalizeUserRole(body.perfil);
-  const requestedStatus = body.status !== undefined ? normalizeUserStatus(body.status) : "ativo";
-  const rawPassword = typeof body.password === "string" ? body.password : "";
-  const password = rawPassword ? rawPassword : DEFAULT_SUGGESTED_USER_PASSWORD;
-
-  if (nome.length < 2) {
-    return res.status(400).json({ error: "Informe o nome completo do usuário (mínimo 2 caracteres)." });
-  }
-  if (!USER_EMAIL_REGEX.test(email)) {
-    return res.status(400).json({ error: "Informe um e-mail válido." });
-  }
-  if (!perfil) {
-    return res.status(400).json({ error: "Perfil inválido. Selecione Administrador, Analista ou Visualizador." });
-  }
-  if (!requestedStatus) {
-    return res.status(400).json({ error: "Status inválido. Utilize ativo ou inativo." });
-  }
-  if (password.length < 6 || password.length > 128) {
-    return res.status(400).json({ error: "A senha deve ter entre 6 e 128 caracteres." });
-  }
-
-  const cleanEmailPattern = email.replace(/[%*]/g, "");
-  const existingProfileRes = await remoteRestRequest<Array<Record<string, any>>>(
-    serviceCfg.restConfig,
-    "perfis_usuarios",
-    {
-      query: `select=id,email&email=ilike.${encodeURIComponent(cleanEmailPattern)}&limit=10`,
-    }
-  );
-  if (!existingProfileRes.ok || !Array.isArray(existingProfileRes.data)) {
-    return res.status(502).json({ error: "Não foi possível verificar usuários existentes." });
-  }
-  const emailAlreadyInProfile = existingProfileRes.data.some(
-    (row) => String(row?.email || "").trim().toLowerCase() === email
-  );
-  if (emailAlreadyInProfile) {
-    return res.status(409).json({ error: "Já existe um usuário cadastrado com este e-mail." });
-  }
-
-  const existingAuthRes = await findSupabaseAuthUser(
-    serviceCfg.authBaseUrl,
-    serviceCfg.serviceRoleKey,
-    { email }
-  );
-  if (!existingAuthRes.ok) {
-    return res.status(502).json({
-      error: existingAuthRes.errorMessage || "Falha ao verificar conta no Supabase Auth.",
-    });
-  }
-
-  let authUserId = existingAuthRes.user?.id || "";
-  let createdNewAuthUser = false;
-
-  if (!authUserId) {
-    const createAuthRes = await supabaseAuthAdminRequest<any>(
-      serviceCfg.authBaseUrl,
-      serviceCfg.serviceRoleKey,
-      "/users",
-      {
-        method: "POST",
-        body: {
-          email,
-          password,
-          email_confirm: true,
-          app_metadata: { must_change_password: true },
-          user_metadata: { nome },
-          ...(requestedStatus === "inativo" ? { ban_duration: "876000h" } : {}),
-        },
-      }
-    );
-    const createdAuth = extractAdminAuthUser(createAuthRes.data);
-    if (!createAuthRes.ok || !createdAuth?.id) {
-      return res.status(createAuthRes.status >= 400 && createAuthRes.status < 500 ? 400 : 502).json({
-        error: createAuthRes.errorMessage || "Não foi possível criar a conta no Supabase Auth.",
-      });
-    }
-    authUserId = createdAuth.id;
-    createdNewAuthUser = true;
-  } else {
-    const syncExistingAuthRes = await supabaseAuthAdminRequest<any>(
-      serviceCfg.authBaseUrl,
-      serviceCfg.serviceRoleKey,
-      `/users/${encodeURIComponent(authUserId)}`,
-      {
-        method: "PUT",
-        body: {
-          email_confirm: true,
-          password,
-          app_metadata: {
-            ...(existingAuthRes.user?.app_metadata || {}),
-            must_change_password: true,
-          },
-          user_metadata: {
-            ...(existingAuthRes.user?.user_metadata || {}),
-            nome,
-          },
-          ban_duration: requestedStatus === "ativo" ? "none" : "876000h",
-        },
-      }
-    );
-    if (!syncExistingAuthRes.ok) {
-      return res.status(502).json({
-        error:
-          syncExistingAuthRes.errorMessage ||
-          "Não foi possível sincronizar a conta existente no Supabase Auth.",
-      });
-    }
-  }
-
-  const insertProfileRes = await remoteRestRequest<Array<Record<string, any>>>(
-    serviceCfg.restConfig,
-    "perfis_usuarios",
-    {
-      method: "POST",
-      prefer: "return=representation",
-      body: {
-        id: authUserId,
-        email,
-        nome,
-        perfil,
-        status: requestedStatus,
-      },
-    }
-  );
-
-  if (!insertProfileRes.ok || !Array.isArray(insertProfileRes.data) || !insertProfileRes.data[0]) {
-    if (createdNewAuthUser) {
-      await supabaseAuthAdminRequest(
-        serviceCfg.authBaseUrl,
-        serviceCfg.serviceRoleKey,
-        `/users/${encodeURIComponent(authUserId)}`,
-        { method: "DELETE" }
-      );
-    }
-    return res.status(502).json({ error: "Não foi possível salvar o perfil do usuário em perfis_usuarios." });
-  }
-
-  return res.status(201).json({
-    user: sanitizePerfilUsuarioRow(insertProfileRes.data[0]),
-    message:
-      requestedStatus === "ativo"
-        ? "Usuário salvo e ativado com sucesso."
-        : "Usuário salvo com sucesso.",
+  return res.status(409).json({
+    blocked: true,
+    code: "SECURE_USER_ONBOARDING_REQUIRED",
+    error: USER_CREATION_BLOCKED_MESSAGE,
   });
 });
 
@@ -3739,11 +3318,10 @@ app.post("/api/users/:id/reset-password", requireRole(["Administrador"]), async 
   }
 
   const body = req.body && typeof req.body === "object" ? (req.body as Record<string, unknown>) : {};
-  const rawPassword = typeof body.newPassword === "string" ? body.newPassword : "";
-  const nextPassword = rawPassword ? rawPassword : DEFAULT_SUGGESTED_USER_PASSWORD;
+  const nextPassword = typeof body.newPassword === "string" ? body.newPassword : "";
 
   if (nextPassword.length < 6 || nextPassword.length > 128) {
-    return res.status(400).json({ error: "A nova senha deve ter entre 6 e 128 caracteres." });
+    return res.status(400).json({ error: "Informe uma nova senha válida (entre 6 e 128 caracteres)." });
   }
 
   const existingRes = await remoteRestRequest<Array<Record<string, any>>>(
@@ -3868,6 +3446,15 @@ app.delete("/api/users/:id", requireRole(["Administrador"]), async (req, res) =>
 
   return res.json({ ok: true, message: "Usuário excluído com sucesso." });
 });
+
+app.use(
+  "/api/solicitacoes-vistoria",
+  createSolicitacoesVistoriaRouter({
+    requireRole,
+    getSessionIdentity,
+    getAuthorDisplayName,
+  })
+);
 
 const isProduction = process.env.NODE_ENV === "production" || Boolean(process.env.VERCEL);
 const isTestEnv = process.env.NODE_ENV === "test";

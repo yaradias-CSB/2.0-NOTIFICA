@@ -122,7 +122,7 @@ type BootstrapPayload = {
 let inflightBootstrap: Promise<BootstrapPayload> | null = null;
 let lastBootstrapResult: { ts: number; data: BootstrapPayload } | null = null;
 
-async function fetchRemoteBootstrap(): Promise<BootstrapPayload> {
+async function fetchRemoteBootstrap(fetchImpl: typeof fetch = authFetch): Promise<BootstrapPayload> {
   if (typeof window === 'undefined' || (typeof navigator !== 'undefined' && !navigator.onLine)) {
     return { remoteEnabled: false, empreendedores: [], barragens: [], responsaveisTecnicos: [] };
   }
@@ -135,7 +135,7 @@ async function fetchRemoteBootstrap(): Promise<BootstrapPayload> {
 
   inflightBootstrap = (async () => {
     try {
-      const res = await authFetch('/api/registry/bootstrap');
+      const res = await fetchImpl('/api/registry/bootstrap');
       if (!res.ok) {
         return { remoteEnabled: false, empreendedores: [], barragens: [], responsaveisTecnicos: [] };
       }
@@ -169,43 +169,62 @@ async function parseErrorMessage(res: Response, fallback: string): Promise<strin
   return fallback;
 }
 
-async function syncRemoteItem<T>(path: string, item: T): Promise<T> {
-  if (typeof window === 'undefined' || (typeof navigator !== 'undefined' && !navigator.onLine)) {
-    return item;
+async function syncRemoteItem<T>(
+  path: string,
+  item: T,
+  fetchImpl: typeof fetch = authFetch
+): Promise<T> {
+  if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+    throw new Error('O cadastro no Administra não foi realizado porque o dispositivo está offline.');
   }
-  const res = await authFetch(path, {
+  const res = await fetchImpl(path, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(stripSensitiveFields(item)),
   });
   if (!res.ok) {
-    throw new Error(await parseErrorMessage(res, `Falha na gravação remota (HTTP ${res.status}).`));
+    throw new Error(await parseErrorMessage(res, `O cadastro no Administra não foi realizado (HTTP ${res.status}).`));
   }
-  const data = await res.json();
+  const data = await res.json().catch(() => null);
   if (data?.synced && data?.item) {
     return data.item as T;
   }
-  return item;
+  throw new Error(
+    (data && (data.error || data.message)) ||
+      'O cadastro no Administra não foi realizado.'
+  );
 }
 
-async function deleteRemoteItem(path: string): Promise<void> {
-  if (typeof window === 'undefined' || (typeof navigator !== 'undefined' && !navigator.onLine)) {
-    return;
+async function deleteRemoteItem(
+  path: string,
+  fetchImpl: typeof fetch = authFetch
+): Promise<void> {
+  if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+    throw new Error('A exclusão no Administra não foi realizada porque o dispositivo está offline.');
   }
-  const res = await authFetch(path, { method: 'DELETE' });
+  const res = await fetchImpl(path, { method: 'DELETE' });
   if (!res.ok) {
-    throw new Error(await parseErrorMessage(res, `Falha na exclusão remota (HTTP ${res.status}).`));
+    throw new Error(await parseErrorMessage(res, `A exclusão no Administra não foi realizada (HTTP ${res.status}).`));
+  }
+  const data = await res.json().catch(() => null);
+  if (!data?.deleted) {
+    throw new Error(
+      (data && (data.error || data.message)) ||
+        'A exclusão no Administra não foi realizada.'
+    );
   }
 }
 
 export class LocalAdministraRepository implements AdministraRegistryRepository {
+  constructor(private readonly fetchImpl: typeof fetch = authFetch) {}
+
   invalidateCache(): void {
     lastBootstrapResult = null;
   }
 
   async getEmpreendedores(): Promise<EmpreendedorCanonico[]> {
     const local = readList<EmpreendedorCanonico>(ADMINISTRA_STORAGE_KEYS.EMPREENDEDORES);
-    const remote = await fetchRemoteBootstrap();
+    const remote = await fetchRemoteBootstrap(this.fetchImpl);
     const merged =
       remote.remoteEnabled && remote.empreendedores.length > 0
         ? mergeByKey(
@@ -270,7 +289,7 @@ export class LocalAdministraRepository implements AdministraRegistryRepository {
       updatedAt: now,
     };
 
-    const synced = await syncRemoteItem('/api/registry/empreendedores', savedLocal);
+    const synced = await syncRemoteItem('/api/registry/empreendedores', savedLocal, this.fetchImpl);
     const updatedList = [synced, ...current.filter((item) => item.id !== id)];
     writeList(ADMINISTRA_STORAGE_KEYS.EMPREENDEDORES, updatedList);
     lastBootstrapResult = null;
@@ -289,7 +308,7 @@ export class LocalAdministraRepository implements AdministraRegistryRepository {
       );
     }
 
-    await deleteRemoteItem(`/api/registry/empreendedores/${encodeURIComponent(safeId)}`);
+    await deleteRemoteItem(`/api/registry/empreendedores/${encodeURIComponent(safeId)}`, this.fetchImpl);
     writeList(
       ADMINISTRA_STORAGE_KEYS.EMPREENDEDORES,
       current.filter((e) => e.id !== safeId)
@@ -299,7 +318,7 @@ export class LocalAdministraRepository implements AdministraRegistryRepository {
 
   async getBarragens(): Promise<BarragemCanonica[]> {
     const local = readList<BarragemCanonica>(ADMINISTRA_STORAGE_KEYS.BARRAGENS);
-    const remote = await fetchRemoteBootstrap();
+    const remote = await fetchRemoteBootstrap(this.fetchImpl);
     const merged =
       remote.remoteEnabled && remote.barragens.length > 0
         ? mergeByKey(
@@ -363,7 +382,7 @@ export class LocalAdministraRepository implements AdministraRegistryRepository {
       updatedAt: now,
     };
 
-    const synced = await syncRemoteItem('/api/registry/barragens', savedLocal);
+    const synced = await syncRemoteItem('/api/registry/barragens', savedLocal, this.fetchImpl);
     writeList(ADMINISTRA_STORAGE_KEYS.BARRAGENS, [
       synced,
       ...current.filter((item) => item.id !== id),
@@ -384,7 +403,7 @@ export class LocalAdministraRepository implements AdministraRegistryRepository {
       );
     }
 
-    await deleteRemoteItem(`/api/registry/barragens/${encodeURIComponent(safeId)}`);
+    await deleteRemoteItem(`/api/registry/barragens/${encodeURIComponent(safeId)}`, this.fetchImpl);
     writeList(
       ADMINISTRA_STORAGE_KEYS.BARRAGENS,
       current.filter((b) => b.id !== safeId)
@@ -394,7 +413,7 @@ export class LocalAdministraRepository implements AdministraRegistryRepository {
 
   async getResponsaveisTecnicos(): Promise<ResponsavelTecnicoCanonico[]> {
     const local = readList<ResponsavelTecnicoCanonico>(ADMINISTRA_STORAGE_KEYS.RTS);
-    const remote = await fetchRemoteBootstrap();
+    const remote = await fetchRemoteBootstrap(this.fetchImpl);
     const merged =
       remote.remoteEnabled && remote.responsaveisTecnicos.length > 0
         ? mergeByKey(local, remote.responsaveisTecnicos, (rt) => normalizeSearchText(rt.nome))
@@ -450,7 +469,7 @@ export class LocalAdministraRepository implements AdministraRegistryRepository {
       updatedAt: now,
     };
 
-    const synced = await syncRemoteItem('/api/registry/rts', savedLocal);
+    const synced = await syncRemoteItem('/api/registry/rts', savedLocal, this.fetchImpl);
     writeList(ADMINISTRA_STORAGE_KEYS.RTS, [synced, ...current.filter((item) => item.id !== id)]);
     lastBootstrapResult = null;
     return synced;
@@ -510,19 +529,23 @@ export class LocalAdministraRepository implements AdministraRegistryRepository {
       updatedAt: now,
     };
 
-    const syncedRemote = await syncRemoteItem<ResponsavelTecnicoCanonico>('/api/registry/rts/link-art', {
-      rtId,
-      rtNome,
-      registroProfissional: localRt.registroProfissional,
-      formacaoProfissional: localRt.formacaoProfissional,
-      cpf: localRt.cpf,
-      art,
-      barragemId: clean.barragemId,
-      barragemNome: clean.barragemNome,
-      empreendedorId: clean.empreendedorId,
-      empreendedorNome: clean.empreendedorNome,
-      processo: clean.processo,
-    } as unknown as ResponsavelTecnicoCanonico);
+    const syncedRemote = await syncRemoteItem<ResponsavelTecnicoCanonico>(
+      '/api/registry/rts/link-art',
+      {
+        rtId,
+        rtNome,
+        registroProfissional: localRt.registroProfissional,
+        formacaoProfissional: localRt.formacaoProfissional,
+        cpf: localRt.cpf,
+        art,
+        barragemId: clean.barragemId,
+        barragemNome: clean.barragemNome,
+        empreendedorId: clean.empreendedorId,
+        empreendedorNome: clean.empreendedorNome,
+        processo: clean.processo,
+      } as unknown as ResponsavelTecnicoCanonico,
+      this.fetchImpl
+    );
 
     const finalRt: ResponsavelTecnicoCanonico =
       syncedRemote && (syncedRemote as any).id
@@ -563,7 +586,7 @@ export class LocalAdministraRepository implements AdministraRegistryRepository {
       );
     }
 
-    await deleteRemoteItem(`/api/registry/responsaveis_tecnicos/${encodeURIComponent(safeId)}`);
+    await deleteRemoteItem(`/api/registry/responsaveis_tecnicos/${encodeURIComponent(safeId)}`, this.fetchImpl);
     writeList(
       ADMINISTRA_STORAGE_KEYS.RTS,
       current.filter((rt) => rt.id !== safeId)

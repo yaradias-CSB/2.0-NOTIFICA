@@ -34,6 +34,9 @@ import { matchMunicipioMT } from '../services/carLookupService';
 import { sanitizeObject } from '../lib/security';
 import { getActiveAuthUser } from '../lib/supabase';
 import RelatorioTecnicoSection from './RelatorioTecnicoSection';
+import { useAuth } from '../contexts/AuthContext';
+import { SolicitarVistoriaModal } from './SolicitarVistoriaModal';
+import { formatCoordenadasSimplesString } from '../types/solicitacoesVistoria';
 
 interface NotificaFormProps {
   onBack: () => void;
@@ -145,9 +148,11 @@ const NotificaForm: React.FC<NotificaFormProps> = ({ onBack, initialData, readOn
     syncEntitiesFromForm,
     refreshEcosystem,
   } = useContext(EcosystemContext);
+  const { canEdit } = useAuth();
   const [savingAdministra, setSavingAdministra] = useState(false);
   const [registeringEntity, setRegisteringEntity] = useState<'empreendedor' | 'barragem' | null>(null);
   const [registeringBarragemIndex, setRegisteringBarragemIndex] = useState<number | null>(null);
+  const [isSolicitarVistoriaOpen, setIsSolicitarVistoriaOpen] = useState(false);
   
   const [formData, setFormData] = useState<NotificacaoData>(() => {
     const base = initialData ? { ...INITIAL_DATA, ...initialData } : { ...INITIAL_DATA, id: crypto.randomUUID() };
@@ -543,8 +548,8 @@ const NotificaForm: React.FC<NotificaFormProps> = ({ onBack, initialData, readOn
           syncRes.createdBarragemCount > 0 ? `, ${syncRes.createdBarragemCount} nova(s)` : ''
         }).`
       );
-    } catch {
-      toast.error('Erro ao salvar cadastro no Administra.');
+    } catch (error: any) {
+      toast.error(error?.message || 'O cadastro no Administra não foi realizado.');
     } finally {
       setSavingAdministra(false);
     }
@@ -807,23 +812,6 @@ const NotificaForm: React.FC<NotificaFormProps> = ({ onBack, initialData, readOn
         toast.error('CNPJ inválido.');
         return;
       }
-
-      const missingRegistrations: string[] = [];
-      if (!formData.empreendedorId) missingRegistrations.push('Empreendedor');
-      if (pendingBarragensIndices.length > 0) {
-        missingRegistrations.push(
-          `Barragem(ns) ${pendingBarragensIndices
-            .map(({ idx, b }) => `#${idx + 1}${b.nome ? ` (${b.nome})` : ''}`)
-            .join(', ')}`
-        );
-      }
-
-      if (missingRegistrations.length > 0) {
-        toast.error(
-          `Para concluir a notificação, cadastre antes na base Administra: ${missingRegistrations.join(', ')}. Você pode salvar como Rascunho temporariamente.`
-        );
-        return;
-      }
     } else {
       if (!formData.empreendedorNome && !formData.numProcesso) {
         toast.error('Preencha ao menos o nome do empreendedor ou o número do processo para salvar o rascunho.');
@@ -833,23 +821,15 @@ const NotificaForm: React.FC<NotificaFormProps> = ({ onBack, initialData, readOn
 
     setIsSaving(true);
     try {
-      const sanitizedRaw = sanitizeObject(formData);
+      const sanitizedFormData = sanitizeObject(formData);
       const isFinalizing = status === 'Concluído';
 
-      let sanitizedFormData = sanitizedRaw;
-      let resolvedEmpreendedorId = sanitizedRaw.empreendedorId;
-      let resolvedBarragemId = sanitizedRaw.barragemId;
-      let resolvedBarragemIds =
-        sanitizedRaw.barragemIds ||
-        (sanitizedRaw.barragens || []).map((b) => b.barragemId).filter(Boolean) as string[];
-
-      if (isFinalizing) {
-        const synced = await syncNotificaEntitiesToAdministra(formData);
-        sanitizedFormData = synced.sanitizedFormData;
-        resolvedEmpreendedorId = synced.resolvedEmpreendedorId;
-        resolvedBarragemId = synced.resolvedBarragemId;
-        resolvedBarragemIds = synced.resolvedBarragemIds;
-      }
+      const resolvedEmpreendedorId = sanitizedFormData.empreendedorId;
+      const resolvedBarragemId = sanitizedFormData.barragemId;
+      const resolvedBarragemIds =
+        sanitizedFormData.barragemIds ||
+        (sanitizedFormData.barragens || []).map((b) => b.barragemId).filter(Boolean) as string[];
+      const hasUnlinkedEntities = !resolvedEmpreendedorId || pendingBarragensIndices.length > 0;
 
       const res = await saveNotificacao({
         ...sanitizedFormData,
@@ -887,17 +867,22 @@ const NotificaForm: React.FC<NotificaFormProps> = ({ onBack, initialData, readOn
 
       toast.success(
         isFinalizing
-          ? `Notificação concluída e ${resolvedBarragemIds.length || 1} barragem(ns) sincronizada(s) no Administra!`
-          : 'Rascunho salvo localmente (dados não vinculados mantidos temporariamente no rascunho).'
+          ? 'Notificação concluída e salva no Notifica!'
+          : 'Rascunho salvo no Notifica.'
       );
-      
-      await Promise.all([refreshData(), isFinalizing ? refreshEcosystem() : Promise.resolve()]);
-      
+      if (isFinalizing && hasUnlinkedEntities) {
+        toast.warning(
+          'Cadastro no Administra não realizado: a notificação foi salva no Notifica sem gravar novos cadastros na base do Administra.'
+        );
+      }
+
+      await refreshData();
+
       if (status === 'Concluído') {
         setConfirmModal({
           isOpen: true,
           title: 'Notificação Concluída!',
-          message: 'O documento foi salvo com sucesso no sistema e todas as barragens foram gravadas no Administra. Deseja voltar para o painel de controle?',
+          message: 'O documento foi salvo com sucesso no Notifica. Deseja voltar para o painel de controle?',
           variant: 'info',
           confirmLabel: 'Voltar ao Painel',
           cancelLabel: 'Continuar aqui',
@@ -1006,6 +991,15 @@ const NotificaForm: React.FC<NotificaFormProps> = ({ onBack, initialData, readOn
           >
             <FileDown size={15} /> Salvar Docx
           </button>
+          {canEdit && (
+            <button
+              type="button"
+              onClick={() => setIsSolicitarVistoriaOpen(true)}
+              className="col-span-2 sm:col-span-1 flex items-center justify-center gap-1.5 px-3 py-2 bg-slate-900 text-white rounded-xl text-xs font-bold hover:bg-slate-800 transition-all shadow-md whitespace-nowrap shrink-0 cursor-pointer"
+            >
+              <ClipboardList size={15} /> Solicitar vistoria
+            </button>
+          )}
         </div>
       </div>
 
@@ -2216,6 +2210,28 @@ const NotificaForm: React.FC<NotificaFormProps> = ({ onBack, initialData, readOn
           </div>
         </div>
       )}
+
+      <SolicitarVistoriaModal
+        isOpen={isSolicitarVistoriaOpen}
+        onClose={() => setIsSolicitarVistoriaOpen(false)}
+        prefill={(() => {
+          const activeBar = formData.barragens?.[activeBarragemIndex] || formData.barragens?.[0];
+          return {
+            tipoReferencia: 'notificacao',
+            referenciaId: formData.id || '',
+            processo: formData.numProcesso || '',
+            barragemId: activeBar?.barragemId || formData.barragemId || '',
+            nomeBarragem: activeBar?.nome || formData.nomeFantasia || '',
+            municipio: formData.municipioEmpreendimento || '',
+            coordenadas: formatCoordenadasSimplesString(
+              activeBar?.lat || formData.lat,
+              activeBar?.long || formData.long
+            ),
+            empreendedorId: formData.empreendedorId || '',
+            empreendedorNome: formData.empreendedorNome || '',
+          };
+        })()}
+      />
     </div>
   );
 };

@@ -32,6 +32,9 @@ import { CarCoordinateLookup } from './ecosystem/CarCoordinateLookup';
 import { matchMunicipioMT } from '../services/carLookupService';
 import { sanitizeObject } from '../lib/security';
 import { getActiveAuthUser } from '../lib/supabase';
+import { useAuth } from '../contexts/AuthContext';
+import { SolicitarVistoriaModal } from './SolicitarVistoriaModal';
+import { formatCoordenadasGmsString } from '../types/solicitacoesVistoria';
 
 interface OpinionFormProps {
   onBack: () => void;
@@ -265,9 +268,11 @@ const CHECKLISTS: { [key: string]: string[] } = {
     syncEntitiesFromForm,
     refreshEcosystem,
   } = useContext(EcosystemContext);
+  const { canEdit } = useAuth();
   const [loading, setLoading] = useState(false);
   const [savingToAdministra, setSavingToAdministra] = useState(false);
   const [registeringEntity, setRegisteringEntity] = useState<'empreendedor' | 'barragem' | 'rt' | null>(null);
+  const [isSolicitarVistoriaOpen, setIsSolicitarVistoriaOpen] = useState(false);
 
   const [activeStep, setActiveStep] = useState(1);
   const [formData, setFormData] = useState<ParecerData>(() => {
@@ -831,40 +836,18 @@ const CHECKLISTS: { [key: string]: string[] } = {
       return;
     }
 
-    if (status === 'Concluído') {
-      const missingRegistrations: string[] = [];
-      if (!formData.empreendedorId) missingRegistrations.push('Empreendedor');
-      if (hasBarragemManual && !formData.barragemId) missingRegistrations.push('Barragem');
-      if (unregisteredRtNames.length > 0) {
-        missingRegistrations.push(`Responsável Técnico (${unregisteredRtNames.join(', ')})`);
-      }
-
-      if (missingRegistrations.length > 0) {
-        toast.error(
-          `Para concluir o parecer, cadastre antes na base Administra: ${missingRegistrations.join(', ')}. Você pode salvar como Rascunho temporariamente.`
-        );
-        return;
-      }
-    }
-
     setLoading(true);
     try {
       const sanitizedFormData = sanitizeObject(formData);
       const isFinalizing = status === 'Concluído';
 
-      let resolvedEmpreendedorId = sanitizedFormData.empreendedorId;
-      let resolvedBarragemId = sanitizedFormData.barragemId;
-      let resolvedRtIds = sanitizedFormData.responsavelTecnicoIds;
-
-      if (isFinalizing) {
-        const syncRes = await syncParecerEntitiesToAdministra(sanitizedFormData);
-        resolvedEmpreendedorId = syncRes.empreendedorId || sanitizedFormData.empreendedorId;
-        resolvedBarragemId = syncRes.barragemId || sanitizedFormData.barragemId;
-        resolvedRtIds =
-          syncRes.responsavelTecnicoIds.length > 0
-            ? syncRes.responsavelTecnicoIds
-            : sanitizedFormData.responsavelTecnicoIds;
-      }
+      const resolvedEmpreendedorId = sanitizedFormData.empreendedorId;
+      const resolvedBarragemId = sanitizedFormData.barragemId;
+      const resolvedRtIds = sanitizedFormData.responsavelTecnicoIds;
+      const hasUnlinkedEntities =
+        !resolvedEmpreendedorId ||
+        (hasBarragemManual && !resolvedBarragemId) ||
+        unregisteredRtNames.length > 0;
 
       const resolvedDataParecer = sanitizedFormData.dataParecer || new Date().toISOString().split('T')[0];
 
@@ -910,13 +893,18 @@ const CHECKLISTS: { [key: string]: string[] } = {
         }));
       }
 
-      await Promise.all([refreshData?.(), isFinalizing ? refreshEcosystem() : Promise.resolve()]);
+      await refreshData?.();
 
       toast.success(
         isFinalizing
-          ? 'Parecer concluído e sincronizado com o Administra!'
-          : 'Rascunho salvo localmente (dados não vinculados mantidos temporariamente no rascunho).'
+          ? 'Parecer concluído e salvo no Notifica!'
+          : 'Rascunho salvo no Notifica.'
       );
+      if (isFinalizing && hasUnlinkedEntities) {
+        toast.warning(
+          'Cadastro no Administra não realizado: o parecer foi salvo no Notifica sem gravar novos cadastros na base do Administra.'
+        );
+      }
       
       if (status === 'Ofício de Pendências') {
         toast.info('Abrindo Ofício de Pendências com os dados vinculados...');
@@ -1055,6 +1043,16 @@ const CHECKLISTS: { [key: string]: string[] } = {
               <Download size={14} />
               Exportar Word
             </button>
+            {canEdit && (
+              <button
+                type="button"
+                onClick={() => setIsSolicitarVistoriaOpen(true)}
+                className="flex-1 sm:flex-none justify-center px-3 sm:px-4 py-2 bg-slate-900 text-white rounded-xl font-bold text-xs hover:bg-slate-800 transition-all flex items-center gap-1.5 shadow-lg shadow-slate-900/15 whitespace-nowrap shrink-0 cursor-pointer"
+              >
+                <ClipboardList size={14} />
+                Solicitar vistoria
+              </button>
+            )}
           </div>
         </div>
 
@@ -2772,6 +2770,23 @@ const CHECKLISTS: { [key: string]: string[] } = {
 
         </div>
       </div>
+
+      <SolicitarVistoriaModal
+        isOpen={isSolicitarVistoriaOpen}
+        onClose={() => setIsSolicitarVistoriaOpen(false)}
+        prefill={{
+          tipoReferencia: 'parecer',
+          referenciaId: formData.id || '',
+          processo: formData.processo || formData.numProtocoloAnalisado || '',
+          barragemId: formData.barragemId || '',
+          nomeBarragem: formData.nomeBarragem || '',
+          municipio: formData.municipio || '',
+          cursoAgua: formData.nomeCursoAguaBarrado || '',
+          coordenadas: formatCoordenadasGmsString(formData.coordenadasGMS),
+          empreendedorId: formData.empreendedorId || '',
+          empreendedorNome: formData.identificacaoEmpreendedor || '',
+        }}
+      />
     </div>
   );
 };

@@ -781,6 +781,11 @@ export const EcossistemaAdministra: React.FC = () => {
       toast.success(
         `Sincronização concluída: ${createdEmps} novos empreendedores, ${createdBars} novas barragens e ${createdRTs} novos RTs.`
       );
+    } catch (error: any) {
+      toast.error(
+        error?.message ||
+          'O cadastro no Administra não foi realizado: escritas na base do Administra estão temporariamente bloqueadas.'
+      );
     } finally {
       setIsSyncingExisting(false);
     }
@@ -839,28 +844,47 @@ export const EcossistemaAdministra: React.FC = () => {
   const handleBatchImportTab = async () => {
     setIsBatchImporting(true);
     let count = 0;
+    let failures = 0;
+    let lastErrorMessage = '';
     try {
       if (activeTab === 'empreendedores') {
         const toImport = filteredEmpreendedores.filter((x) => x.isExternalPreview && !x.alreadyInAdministra);
         for (const { item } of toImport) {
           const res = await importEmpreendedorToAdministra(item);
           if (res.success) count++;
+          else {
+            failures++;
+            if (res.message) lastErrorMessage = res.message;
+          }
         }
       } else if (activeTab === 'barragens') {
         const toImport = filteredBarragens.filter((x) => x.isExternalPreview && !x.alreadyInAdministra);
         for (const { item } of toImport) {
           const res = await importBarragemToAdministra(item);
           if (res.success) count++;
+          else {
+            failures++;
+            if (res.message) lastErrorMessage = res.message;
+          }
         }
       } else if (activeTab === 'rts') {
         const toImport = filteredRTs.filter((x) => x.isExternalPreview && !x.alreadyInAdministra);
         for (const { item } of toImport) {
           const res = await importRTToAdministra(item);
           if (res.success) count++;
+          else {
+            failures++;
+            if (res.message) lastErrorMessage = res.message;
+          }
         }
       }
-      if (count > 0) {
+      if (count > 0 && failures === 0) {
         toast.success(`${count} registro(s) importado(s) para a base central do Administra!`);
+      } else if (failures > 0) {
+        toast.error(
+          lastErrorMessage ||
+            'O cadastro no Administra não foi realizado: escritas na base do Administra estão temporariamente bloqueadas.'
+        );
       } else {
         toast.info('Todos os registros exibidos já estão sincronizados na base do Administra.');
       }
@@ -1032,6 +1056,14 @@ export const EcossistemaAdministra: React.FC = () => {
             </p>
             <p className="text-2xl font-black text-emerald-400 mt-0.5">{allEcosystemProducts.length}</p>
           </button>
+        </div>
+
+        {/* Aviso de bloqueio temporário de escrita no Administra */}
+        <div className="relative z-10 mt-5 rounded-2xl border border-amber-400/40 bg-amber-500/15 px-4 py-3 text-xs text-amber-100 flex items-start gap-2.5">
+          <AlertCircle size={16} className="shrink-0 mt-0.5 text-amber-300" />
+          <span>
+            <strong>Modo somente leitura para cadastros no Administra:</strong> criações, edições, vínculos de ART e exclusões na base central do Administra estão temporariamente bloqueados até a liberação da API oficial de escrita com validação híbrida. A consulta de empreendedores, barragens e RTs permanece funcionando normalmente.
+          </span>
         </div>
 
         {/* Live System Connection Strip */}

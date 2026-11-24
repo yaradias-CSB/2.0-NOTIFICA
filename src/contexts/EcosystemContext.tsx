@@ -1,4 +1,4 @@
-import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, ReactNode } from 'react';
+import React, { createContext, useCallback, useContext, useEffect, useMemo, useState, ReactNode } from 'react';
 import {
   BarragemCanonica,
   ChangeRequest,
@@ -187,7 +187,6 @@ export const EcosystemProvider: React.FC<{ children: ReactNode }> = ({ children 
   const [loading, setLoading] = useState(true);
   const [isPullingExternal, setIsPullingExternal] = useState(false);
   const [lastExternalSyncAt, setLastExternalSyncAt] = useState<string | null>(null);
-  const bootstrappedRef = useRef(false);
 
   const applyIntegratedPayload = useCallback((payload: IntegratedSystemsDataPayload) => {
     setExternalEmpreendedores(
@@ -256,150 +255,6 @@ export const EcosystemProvider: React.FC<{ children: ReactNode }> = ({ children 
   useEffect(() => {
     refreshEcosystem();
   }, [refreshEcosystem]);
-
-  // Automatically index existing local Notifica CSB documents into Administra registry once on initial load
-  useEffect(() => {
-    if (docsLoading || !canEdit || bootstrappedRef.current) return;
-    const totalDocs = pareceres.length + oficios.length + notificacoes.length;
-    if (totalDocs === 0) return;
-
-    bootstrappedRef.current = true;
-
-    const indexExistingDocs = async () => {
-      try {
-        const currentEmps = await administraRepository.getEmpreendedores();
-        const existingCpfs = new Set(currentEmps.map((e) => e.cpfCnpjNormalizado).filter(Boolean));
-        const existingNames = new Set(currentEmps.map((e) => normalizeText(e.nome)).filter(Boolean));
-
-        let syncedAny = false;
-
-        for (const p of pareceres) {
-          const cpfNorm = normalizeDigits(p.cpfCnpj);
-          const empName = normalizeText(p.identificacaoEmpreendedor);
-          if ((cpfNorm && !existingCpfs.has(cpfNorm)) || (empName && !existingNames.has(empName))) {
-            await administraRepository.syncFromFormSubmission({
-              existingEmpreendedorId: p.empreendedorId,
-              existingBarragemId: p.barragemId,
-              empreendedorNome: p.identificacaoEmpreendedor,
-              cpfCnpj: p.cpfCnpj,
-              logradouro: p.logradouro,
-              numero: p.numero,
-              complemento: p.complemento,
-              bairro: p.bairro,
-              municipio: p.municipio,
-              cep: p.cep,
-              carMt: p.numCarMt,
-              nomeBarragem: p.nomeBarragem || p.localizacaoEmpreendimento,
-              codigoSnisb: p.snisb,
-              processo: p.processo,
-              cursoAguaBarrado: p.nomeCursoAguaBarrado,
-              usoPreponderante: p.usoPreponderante,
-              situacaoEmpreendimento: p.situacaoEmpreendimento,
-              tipoBarragem: p.tipoBarragem,
-              coordenadasGMS: p.coordenadasGMS,
-              altura: p.alturaBarragem,
-              volume: p.volumeBarragem,
-              larguraCoroamento: p.larguraCoroamento,
-              comprimentoCoroamento: p.comprimentoCoroamento,
-              classificacaoBarragem: p.classificacaoBarragem,
-              classificacaoDPA: p.classificacaoDPA,
-              classificacaoCRI: p.classificacaoCRI,
-              portariaClassificacao: p.portariaClassificacao,
-              parecerClassificacao: p.parecerClassificacao,
-              responsaveisTecnicos: [
-                ...(p.responsaveisTecnicos || []),
-                ...(p.rtOutros || []).filter((n) => n.trim()),
-              ].map((nome) => ({
-                nome,
-                registroProfissional: p.registroProfissionalRT || p.artCreaMt,
-                formacaoProfissional: p.formacaoProfissionalRT,
-                cpf: p.cpfRT,
-              })),
-              analista: p.analista,
-            });
-            if (cpfNorm) existingCpfs.add(cpfNorm);
-            if (empName) existingNames.add(empName);
-            syncedAny = true;
-          }
-        }
-
-        for (const o of oficios) {
-          const cpfNorm = normalizeDigits(o.cpfCnpj);
-          const empName = normalizeText(o.interessado);
-          if ((cpfNorm && !existingCpfs.has(cpfNorm)) || (empName && !existingNames.has(empName))) {
-            await administraRepository.syncFromFormSubmission({
-              existingEmpreendedorId: o.empreendedorId,
-              existingBarragemId: o.barragemId,
-              empreendedorNome: o.interessado,
-              cpfCnpj: o.cpfCnpj,
-              logradouro: o.logradouro,
-              numero: o.numero,
-              complemento: o.complemento,
-              bairro: o.bairro,
-              municipio: o.municipio || o.cidadeUf,
-              cep: o.cep,
-              nomeBarragem: o.empreendimento,
-              processo: o.processo || o.protocolo,
-              coordenadasGMS: o.coordenadasGMS,
-              responsaveisTecnicos: [
-                ...(o.responsaveisTecnicos || []),
-                ...(o.rtOutros || []).filter((n) => n.trim()),
-              ].map((nome) => ({ nome, registroProfissional: o.art })),
-              analista: o.analistas?.[0],
-            });
-            if (cpfNorm) existingCpfs.add(cpfNorm);
-            if (empName) existingNames.add(empName);
-            syncedAny = true;
-          }
-        }
-
-        for (const n of notificacoes) {
-          const cpfNorm = normalizeDigits(n.documentoIdentificacao);
-          const empName = normalizeText(n.empreendedorNome);
-          if ((cpfNorm && !existingCpfs.has(cpfNorm)) || (empName && !existingNames.has(empName))) {
-            await administraRepository.syncFromFormSubmission({
-              existingEmpreendedorId: n.empreendedorId,
-              existingBarragemId: n.barragemId,
-              empreendedorNome: n.empreendedorNome,
-              tipoPessoa: n.tipoDocumentoIdentificacao,
-              cpfCnpj: n.documentoIdentificacao,
-              telefone: n.telefone,
-              logradouro: n.logradouro,
-              numero: n.numero,
-              complemento: n.complemento,
-              bairro: n.bairro,
-              municipio: n.municipioEmpreendimento,
-              uf: n.ufCorrespondencia,
-              cep: n.cepCorrespondencia,
-              carMt: n.carMt,
-              nomeBarragem: n.nomeFantasia || n.barragens?.[0]?.nome,
-              processo: n.numProcesso,
-              barragens: Array.isArray(n.barragens)
-                ? n.barragens.map((b, idx) => ({
-                    existingBarragemId: b.barragemId,
-                    nomeBarragem: b.nome || n.nomeFantasia || `Barragem ${idx + 1}`,
-                    codigoSnisb: b.codigoSnisb,
-                    municipio: b.municipio || n.municipioEmpreendimento,
-                  }))
-                : undefined,
-              analista: n.analista || n.analistas?.[0],
-            });
-            if (cpfNorm) existingCpfs.add(cpfNorm);
-            if (empName) existingNames.add(empName);
-            syncedAny = true;
-          }
-        }
-
-        if (syncedAny) {
-          await refreshEcosystem();
-        }
-      } catch (err) {
-        console.warn('Aviso ao indexar registros existentes:', err);
-      }
-    };
-
-    void indexExistingDocs();
-  }, [docsLoading, canEdit, pareceres, oficios, notificacoes, refreshEcosystem]);
 
   const localProducts = useMemo<EcosystemProductSummary[]>(() => {
     const items: EcosystemProductSummary[] = [];

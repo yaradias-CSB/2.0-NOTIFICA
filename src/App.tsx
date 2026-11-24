@@ -52,6 +52,7 @@ import ParecerList from './components/ParecerList';
 import ControleNotificacoes from './views/ControleNotificacoes';
 import { EcossistemaAdministra } from './views/EcossistemaAdministra';
 import { PendenciasView } from './views/PendenciasView';
+import { SolicitacoesVistoriaView } from './views/SolicitacoesVistoriaView';
 import GlobalSearchBar from './components/GlobalSearchBar';
 import { DataContext } from './contexts/DataContext';
 import { EcosystemContext } from './contexts/EcosystemContext';
@@ -68,9 +69,11 @@ import {
 import { ParecerData, OficioData } from './types';
 import { AppDocument } from './contexts/DataContext';
 
+type ExtendedViewId = AppViewId | 'solicitacoes_vistoria';
+
 // Main App Component
 const App: React.FC = () => {
-  const [currentView, setCurrentView] = useState<AppViewId>('dashboard');
+  const [currentView, setCurrentView] = useState<ExtendedViewId>('dashboard');
   const [editingDocument, setEditingDocument] = useState<AppDocument | null>(null);
   const [isViewOnly, setIsViewOnly] = useState(false);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
@@ -96,7 +99,10 @@ const App: React.FC = () => {
   const { session, user, profile, role, isAdmin, canEdit, signOut } = useAuth();
   const hasSession = Boolean(session && user && profile);
   const showAuditMenu = isAuditMenuVisible({ hasSession, isAdmin });
-  const effectiveView = resolveAuthorizedAppView(currentView, { hasSession, isAdmin });
+  const effectiveView: ExtendedViewId =
+    currentView === 'solicitacoes_vistoria'
+      ? (hasSession ? 'solicitacoes_vistoria' : 'dashboard')
+      : resolveAuthorizedAppView(currentView, { hasSession, isAdmin });
   const data = useContext(DataContext);
   const { pendingIncomingCount } = useContext(EcosystemContext);
   const notifications = useNotifications ? useNotifications() : { pendingCount: 0, importantUpdate: false };
@@ -145,7 +151,7 @@ const App: React.FC = () => {
 
   const isSidebarCollapsed = (effectiveView === 'form' || effectiveView === 'oficio' || effectiveView === 'notificacao') || isSidebarManualCollapsed;
   
-  const handleNavigate = (view: AppViewId, doc: AppDocument | null = null, viewOnly: boolean = false) => {
+  const handleNavigate = (view: ExtendedViewId, doc: AppDocument | null = null, viewOnly: boolean = false) => {
     if ((view === 'users' || view === 'audit') && (!hasSession || !isAdmin)) {
       setCurrentView('dashboard');
       setIsMobileMenuOpen(false);
@@ -374,6 +380,14 @@ const App: React.FC = () => {
                 <span className="font-bold text-sm whitespace-nowrap tracking-tight">Pendências</span>
               </button>
 
+              <button 
+                onClick={() => handleNavigate('solicitacoes_vistoria')}
+                className={`flex items-center gap-3 w-full px-4 py-2 rounded-xl transition-all duration-200 group ${currentView === 'solicitacoes_vistoria' ? 'bg-emerald-500 text-white shadow-lg shadow-emerald-500/20' : 'text-slate-400 hover:bg-slate-800/50 hover:text-white'}`}
+              >
+                <FileCheck size={20} className={`shrink-0 transition-transform group-hover:scale-110 ${currentView === 'solicitacoes_vistoria' ? 'text-white' : 'text-slate-500 group-hover:text-emerald-400'}`} />
+                <span className="font-bold text-sm whitespace-nowrap tracking-tight">Solicitações de Vistoria</span>
+              </button>
+
               <div className="pt-2 pb-1 px-4">
                 <div className="h-px bg-slate-800 w-full"></div>
               </div>
@@ -511,6 +525,13 @@ const App: React.FC = () => {
               >
                 <ListChecks size={24} />
               </button>
+              <button 
+                onClick={() => handleNavigate('solicitacoes_vistoria')}
+                className={`p-3 rounded-xl transition-all ${currentView === 'solicitacoes_vistoria' ? 'bg-emerald-500 text-white shadow-lg shadow-emerald-500/20' : 'text-slate-500 hover:bg-slate-800 hover:text-white'}`}
+                title="Solicitações de Vistoria"
+              >
+                <FileCheck size={24} />
+              </button>
 
               {isAdmin && (
                 <button 
@@ -580,6 +601,7 @@ const App: React.FC = () => {
                 {effectiveView === 'audit' && showAuditMenu && <Shield size={17} />}
                 {effectiveView === 'ecossistema' && <Globe size={17} />}
                 {effectiveView === 'pendencias' && <ListChecks size={17} />}
+                {effectiveView === 'solicitacoes_vistoria' && <FileCheck size={17} />}
               </div>
               <div className="flex flex-col">
                 <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest leading-none">
@@ -594,6 +616,7 @@ const App: React.FC = () => {
                   {effectiveView === 'notificacao' && (isViewOnly ? 'Visualizar Notificação' : 'Formulário de Notificação')}
                   {effectiveView === 'ecossistema' && 'Ecossistema & Administra'}
                   {effectiveView === 'pendencias' && 'Módulo de Pendências'}
+                  {effectiveView === 'solicitacoes_vistoria' && 'Solicitações de Vistoria'}
                   {effectiveView === 'info' && 'Informações do Sistema'}
                   {effectiveView === 'users' && 'Gestão de Usuários'}
                   {effectiveView === 'audit' && showAuditMenu && 'Auditoria de Ações'}
@@ -786,6 +809,8 @@ const App: React.FC = () => {
             <EcossistemaAdministra />
           ) : effectiveView === 'pendencias' ? (
             <PendenciasView />
+          ) : effectiveView === 'solicitacoes_vistoria' ? (
+            <SolicitacoesVistoriaView />
           ) : (
              <div className="p-6 md:p-12 max-w-[1600px] mx-auto w-full animate-fade-in space-y-12">
                 

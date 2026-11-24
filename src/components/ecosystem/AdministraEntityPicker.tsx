@@ -918,7 +918,7 @@ export const AdministraEntityPicker: React.FC<AdministraEntityPickerProps> = ({
           {!effectiveReadOnly && (
             <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-[11px] font-bold bg-blue-50 border border-blue-200 text-blue-800">
               <PencilLine size={13} className="text-blue-600 shrink-0" />
-              Rascunho preserva dados locais; para concluir, todos os dados usados devem estar cadastrados no Administra.
+              Documentos do Notifica podem ser salvos e concluídos normalmente; escritas na base do Administra estão temporariamente indisponíveis.
             </span>
           )}
         </div>

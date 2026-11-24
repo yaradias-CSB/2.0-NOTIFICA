@@ -29,12 +29,21 @@ interface MockPerfilRow {
   status: string;
 }
 
+import fs from "node:fs";
+import path from "node:path";
+
 let mockAuthUsers: MockAuthUser[] = [];
 let mockPerfis: MockPerfilRow[] = [];
 let createdAuthCalls = 0;
+let adminAuthWriteCalls = 0;
+let perfisWriteCalls = 0;
+let userOrTokenApiKeys: string[] = [];
 
 function resetMockDb() {
   createdAuthCalls = 0;
+  adminAuthWriteCalls = 0;
+  perfisWriteCalls = 0;
+  userOrTokenApiKeys = [];
   mockAuthUsers = [
     {
       id: ADMIN_ID,
@@ -118,7 +127,8 @@ function installMockFetch(baseServerUrl: string) {
     // Token user verification
     if (url.pathname === "/auth/v1/user") {
       const apiKey = headers.get("apikey") || "";
-      if (apiKey === "wrong-anon-key-notifica-123456") {
+      userOrTokenApiKeys.push(apiKey);
+      if (apiKey !== "test-anon-key-notifica-123456") {
         return new Response(JSON.stringify({ message: "Invalid API key" }), { status: 401 });
       }
       const token = (headers.get("Authorization") || "").replace(/^Bearer\s+/i, "");
@@ -163,7 +173,8 @@ function installMockFetch(baseServerUrl: string) {
     // Password verification (/auth/v1/token?grant_type=password)
     if (url.pathname === "/auth/v1/token" && method === "POST") {
       const apiKey = headers.get("apikey") || "";
-      if (apiKey === "wrong-anon-key-notifica-123456") {
+      userOrTokenApiKeys.push(apiKey);
+      if (apiKey !== "test-anon-key-notifica-123456") {
         return new Response(JSON.stringify({ message: "Invalid API key" }), { status: 401 });
       }
       const email = String(body?.email || "").trim().toLowerCase();
@@ -191,6 +202,7 @@ function installMockFetch(baseServerUrl: string) {
       }
 
       if (url.pathname === "/auth/v1/admin/users" && method === "POST") {
+        adminAuthWriteCalls += 1;
         const email = String(body?.email || "").trim().toLowerCase();
         if (mockAuthUsers.some((u) => u.email === email)) {
           return new Response(JSON.stringify({ msg: "User already registered" }), { status: 422 });
@@ -220,6 +232,7 @@ function installMockFetch(baseServerUrl: string) {
           return new Response(JSON.stringify(mockAuthUsers[idx]), { status: 200 });
         }
         if (method === "PUT") {
+          adminAuthWriteCalls += 1;
           if (typeof body?.password === "string") {
             mockAuthUsers[idx].password = body.password;
           }
@@ -246,6 +259,7 @@ function installMockFetch(baseServerUrl: string) {
           return new Response(JSON.stringify(mockAuthUsers[idx]), { status: 200 });
         }
         if (method === "DELETE") {
+          adminAuthWriteCalls += 1;
           mockAuthUsers.splice(idx, 1);
           return new Response(JSON.stringify({}), { status: 200 });
         }
@@ -275,6 +289,7 @@ function installMockFetch(baseServerUrl: string) {
       }
 
       if (method === "POST") {
+        perfisWriteCalls += 1;
         const row: MockPerfilRow = {
           id: String(body?.id || ""),
           email: String(body?.email || "").toLowerCase(),
@@ -385,7 +400,7 @@ test("Apenas Administrador acessa TODAS as rotas /api/users* (401 sem token, 403
         Authorization: `Bearer ${token}`,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({ newPassword: "@12345" }),
+      body: JSON.stringify({ newPassword: "NovaSenhaForte#2026" }),
     });
     assert.equal(resetRes.status, 403);
 
@@ -397,8 +412,10 @@ test("Apenas Administrador acessa TODAS as rotas /api/users* (401 sem token, 403
   }
 });
 
-test("Administrador cria e ativa usuário no Supabase com senha padrão @12345 e sem duplicar Auth", async () => {
-  // 1. Criação com senha sugerida padrão @12345 e ativação automática
+test("POST /api/users bloqueia criação direta (409) sem senha padrão fixa e sem chamadas externas", async () => {
+  const perfisBefore = mockPerfis.length;
+  const authBefore = mockAuthUsers.length;
+
   const createRes = await originalFetch(`${baseUrl}/api/users`, {
     method: "POST",
     headers: {
@@ -411,49 +428,29 @@ test("Administrador cria e ativa usuário no Supabase com senha padrão @12345 e
       perfil: "Analista",
     }),
   });
-  assert.equal(createRes.status, 201);
-  const createdJson = (await createRes.json()) as { user: MockPerfilRow };
-  assert.equal(createdJson.user.status, "ativo");
-  assert.equal(createdJson.user.perfil, "Analista");
-  assert.equal(createdAuthCalls, 1);
+  assert.equal(createRes.status, 409);
+  const body = (await createRes.json()) as { blocked?: boolean; code?: string; error?: string };
+  assert.equal(body.blocked, true);
+  assert.equal(body.code, "SECURE_USER_ONBOARDING_REQUIRED");
+  assert.ok(body.error && body.error.length > 10);
 
-  const authCreated = mockAuthUsers.find((u) => u.email === "novotecnico@sema.mt.gov.br");
-  assert.ok(authCreated);
-  assert.equal(authCreated.password, "@12345");
+  // Nenhuma conta ou perfil foi criado, nem houve chamada ao Admin Auth ou perfis_usuarios
+  assert.equal(createdAuthCalls, 0);
+  assert.equal(adminAuthWriteCalls, 0);
+  assert.equal(perfisWriteCalls, 0);
+  assert.equal(mockPerfis.length, perfisBefore);
+  assert.equal(mockAuthUsers.length, authBefore);
 
-  // 2. Reaproveita conta existente no Supabase Auth se já existir lá sem duplicar
-  const linkRes = await originalFetch(`${baseUrl}/api/users`, {
-    method: "POST",
-    headers: {
-      Authorization: "Bearer token-admin",
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      nome: "Conta Existente Auth",
-      email: "jaexisteauth@sema.mt.gov.br",
-      perfil: "Visualizador",
-      password: "@12345",
-    }),
-  });
-  assert.equal(linkRes.status, 201);
-  const linkedJson = (await linkRes.json()) as { user: MockPerfilRow };
-  assert.equal(linkedJson.user.id, ORPHAN_AUTH_ID);
-  assert.equal(createdAuthCalls, 1); // não criou outra conta Auth
-
-  // 3. Bloqueia e-mail duplicado em perfis_usuarios
-  const dupRes = await originalFetch(`${baseUrl}/api/users`, {
-    method: "POST",
-    headers: {
-      Authorization: "Bearer token-admin",
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      nome: "Duplicado",
-      email: "novotecnico@sema.mt.gov.br",
-      perfil: "Visualizador",
-    }),
-  });
-  assert.equal(dupRes.status, 409);
+  // Garante ausência de senha padrão fixa embutida no código de produção
+  const serverSource = fs.readFileSync(path.resolve(process.cwd(), "server.ts"), "utf8");
+  const userMgmtSource = fs.readFileSync(
+    path.resolve(process.cwd(), "src/components/UserManagement.tsx"),
+    "utf8"
+  );
+  assert.equal(serverSource.includes("DEFAULT_SUGGESTED_USER_PASSWORD"), false);
+  assert.equal(serverSource.includes("@12345"), false);
+  assert.equal(userMgmtSource.includes("DEFAULT_SUGGESTED_PASSWORD"), false);
+  assert.equal(userMgmtSource.includes("@12345"), false);
 });
 
 test("Administrador edita, inativa/ativa, reseta senha de todos usuários e exclui (protegendo a própria conta)", async () => {
@@ -516,8 +513,8 @@ test("Administrador edita, inativa/ativa, reseta senha de todos usuários e excl
   });
   assert.equal(selfDemote.status, 400);
 
-  // Resetar senha de qualquer usuário (inclusive admin e visualizador) usando padrão @12345
-  const resetViewer = await originalFetch(`${baseUrl}/api/users/${VIEWER_ID}/reset-password`, {
+  // Reset sem nova senha explícita é recusado (não usa senha padrão fixa)
+  const resetViewerEmpty = await originalFetch(`${baseUrl}/api/users/${VIEWER_ID}/reset-password`, {
     method: "POST",
     headers: {
       Authorization: "Bearer token-admin",
@@ -525,8 +522,8 @@ test("Administrador edita, inativa/ativa, reseta senha de todos usuários e excl
     },
     body: JSON.stringify({}),
   });
-  assert.equal(resetViewer.status, 200);
-  assert.equal(mockAuthUsers.find((u) => u.id === VIEWER_ID)?.password, "@12345");
+  assert.equal(resetViewerEmpty.status, 400);
+  assert.equal(mockAuthUsers.find((u) => u.id === VIEWER_ID)?.password, "viewer-old-password");
 
   // Não permite autoexclusão
   const selfDelete = await originalFetch(`${baseUrl}/api/users/${ADMIN_ID}`, {
@@ -597,46 +594,40 @@ test("Todo usuário autenticado (Visualizador, Analista, Administrador) pode tro
   }
 });
 
-test("Usuário criado ou com senha resetada é obrigado a trocar a senha antes de acessar outras rotas", async () => {
-  // 1. Admin cria novo usuário com senha padrão @12345
-  const createRes = await originalFetch(`${baseUrl}/api/users`, {
+test("Usuário com senha resetada é obrigado a trocar a senha antes de acessar outras rotas", async () => {
+  // 1. Admin reseta senha do Analista com senha temporária explícita
+  const resetAnalystRes = await originalFetch(`${baseUrl}/api/users/${ANALYST_ID}/reset-password`, {
     method: "POST",
     headers: {
       Authorization: "Bearer token-admin",
       "Content-Type": "application/json",
     },
-    body: JSON.stringify({
-      nome: "Primeiro Acesso",
-      email: "primeiroacesso@sema.mt.gov.br",
-      perfil: "Analista",
-    }),
+    body: JSON.stringify({ newPassword: "TempAnalista#2026" }),
   });
-  assert.equal(createRes.status, 201);
-  const createdData = (await createRes.json()) as { user: MockPerfilRow };
-  const newUserId = createdData.user.id;
-  assert.equal(mockAuthUsers.find((u) => u.id === newUserId)?.app_metadata?.must_change_password, true);
-  assert.equal(mockAuthUsers.find((u) => u.id === newUserId)?.user_metadata?.must_change_password, undefined);
+  assert.equal(resetAnalystRes.status, 200);
+  assert.equal(mockAuthUsers.find((u) => u.id === ANALYST_ID)?.app_metadata?.must_change_password, true);
+  assert.equal(mockAuthUsers.find((u) => u.id === ANALYST_ID)?.user_metadata?.must_change_password, undefined);
 
   // Edição do nome pelo admin preserva a obrigatoriedade de troca de senha em app_metadata
-  const editBeforeLogin = await originalFetch(`${baseUrl}/api/users/${newUserId}`, {
+  const editBeforeLogin = await originalFetch(`${baseUrl}/api/users/${ANALYST_ID}`, {
     method: "PATCH",
     headers: {
       Authorization: "Bearer token-admin",
       "Content-Type": "application/json",
     },
-    body: JSON.stringify({ nome: "Primeiro Acesso Editado" }),
+    body: JSON.stringify({ nome: "Analista Primeiro Acesso Editado" }),
   });
   assert.equal(editBeforeLogin.status, 200);
-  assert.equal(mockAuthUsers.find((u) => u.id === newUserId)?.app_metadata?.must_change_password, true);
+  assert.equal(mockAuthUsers.find((u) => u.id === ANALYST_ID)?.app_metadata?.must_change_password, true);
 
   // Mesmo se o usuário alterasse user_metadata no cliente, app_metadata continua bloqueando o acesso
-  const createdAuthUser = mockAuthUsers.find((u) => u.id === newUserId);
-  assert.ok(createdAuthUser);
-  createdAuthUser.user_metadata.must_change_password = false;
+  const analystAuthUser = mockAuthUsers.find((u) => u.id === ANALYST_ID);
+  assert.ok(analystAuthUser);
+  analystAuthUser.user_metadata.must_change_password = false;
 
   // Antes de trocar a senha, qualquer outra rota retorna 403 PASSWORD_CHANGE_REQUIRED
   const blockedRes = await originalFetch(`${baseUrl}/api/ecosystem/status`, {
-    headers: { Authorization: `Bearer token-id:${newUserId}` },
+    headers: { Authorization: "Bearer token-analyst" },
   });
   assert.equal(blockedRes.status, 403);
   const blockedBody = (await blockedRes.json()) as { code?: string };
@@ -646,31 +637,31 @@ test("Usuário criado ou com senha resetada é obrigado a trocar a senha antes d
   const changeFirstRes = await originalFetch(`${baseUrl}/api/auth/change-password`, {
     method: "POST",
     headers: {
-      Authorization: `Bearer token-id:${newUserId}`,
+      Authorization: "Bearer token-analyst",
       "Content-Type": "application/json",
     },
     body: JSON.stringify({
-      currentPassword: "@12345",
+      currentPassword: "TempAnalista#2026",
       newPassword: "MinhaSenhaPessoal#1",
     }),
   });
   assert.equal(changeFirstRes.status, 200);
-  assert.equal(mockAuthUsers.find((u) => u.id === newUserId)?.app_metadata?.must_change_password, false);
+  assert.equal(mockAuthUsers.find((u) => u.id === ANALYST_ID)?.app_metadata?.must_change_password, false);
 
   // Após trocar a senha, acesso às rotas normais é liberado
   const allowedAfterChange = await originalFetch(`${baseUrl}/api/ecosystem/status`, {
-    headers: { Authorization: `Bearer token-id:${newUserId}` },
+    headers: { Authorization: "Bearer token-analyst" },
   });
   assert.equal(allowedAfterChange.status, 200);
 
-  // 2. Admin reseta a senha do Visualizador -> volta a exigir troca de senha em app_metadata
+  // 2. Admin reseta a senha do Visualizador com senha explícita -> volta a exigir troca de senha em app_metadata
   const resetViewerRes = await originalFetch(`${baseUrl}/api/users/${VIEWER_ID}/reset-password`, {
     method: "POST",
     headers: {
       Authorization: "Bearer token-admin",
       "Content-Type": "application/json",
     },
-    body: JSON.stringify({}),
+    body: JSON.stringify({ newPassword: "TempViewer#2026" }),
   });
   assert.equal(resetViewerRes.status, 200);
   assert.equal(mockAuthUsers.find((u) => u.id === VIEWER_ID)?.app_metadata?.must_change_password, true);
@@ -690,7 +681,7 @@ test("Usuário criado ou com senha resetada é obrigado a trocar a senha antes d
       "Content-Type": "application/json",
     },
     body: JSON.stringify({
-      currentPassword: "@12345",
+      currentPassword: "TempViewer#2026",
       newPassword: "ViewerSenhaNova#2",
     }),
   });
@@ -742,7 +733,7 @@ test("Troca obrigatória diferencia token ausente/inválido, senha incorreta e f
   const noTokenRes = await originalFetch(`${baseUrl}/api/auth/change-password`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ currentPassword: "@12345", newPassword: "NovaSenhaValida#1" }),
+    body: JSON.stringify({ currentPassword: "TempPassword#1", newPassword: "NovaSenhaValida#1" }),
   });
   assert.equal(noTokenRes.status, 401);
 
@@ -752,7 +743,7 @@ test("Troca obrigatória diferencia token ausente/inválido, senha incorreta e f
       Authorization: "Bearer   ",
       "Content-Type": "application/json",
     },
-    body: JSON.stringify({ currentPassword: "@12345", newPassword: "NovaSenhaValida#1" }),
+    body: JSON.stringify({ currentPassword: "TempPassword#1", newPassword: "NovaSenhaValida#1" }),
   });
   assert.equal(emptyBearerRes.status, 401);
 
@@ -762,41 +753,48 @@ test("Troca obrigatória diferencia token ausente/inválido, senha incorreta e f
       Authorization: "Bearer token-invalido-ou-expirado",
       "Content-Type": "application/json",
     },
-    body: JSON.stringify({ currentPassword: "@12345", newPassword: "NovaSenhaValida#1" }),
+    body: JSON.stringify({ currentPassword: "TempPassword#1", newPassword: "NovaSenhaValida#1" }),
   });
   assert.equal(invalidTokenRes.status, 401);
   const invalidTokenBody = (await invalidTokenRes.json()) as { error?: string };
   assert.equal(invalidTokenBody.error, "Sessão inválida ou expirada.");
 
-  // 2. Conta nova com troca obrigatória + token JWT válido (mesmo se NOTIFICA_SUPABASE_ANON_KEY estiver divergente)
-  const createRes = await originalFetch(`${baseUrl}/api/users`, {
+  // 2. Conta com troca obrigatória + token JWT válido:
+  //    - sem nenhuma chave anon válida, NÃO faz fallback para service_role (retorna 503)
+  //    - com VITE_SUPABASE_ANON_KEY válida como fallback anon, conclui a troca normalmente
+  const resetRes = await originalFetch(`${baseUrl}/api/users/${ANALYST_ID}/reset-password`, {
     method: "POST",
     headers: {
       Authorization: "Bearer token-admin",
       "Content-Type": "application/json",
     },
-    body: JSON.stringify({
-      nome: "Conta Nova Modal",
-      email: "contanova@sema.mt.gov.br",
-      perfil: "Analista",
-    }),
+    body: JSON.stringify({ newPassword: "TempModalPassword#9" }),
   });
-  assert.equal(createRes.status, 201);
-  const created = (await createRes.json()) as { user: MockPerfilRow };
-  const newId = created.user.id;
+  assert.equal(resetRes.status, 200);
 
   const headerB64 = Buffer.from(JSON.stringify({ alg: "HS256", typ: "JWT" })).toString("base64url");
   const payloadB64 = Buffer.from(
     JSON.stringify({
-      sub: newId,
+      sub: ANALYST_ID,
       iss: `${process.env.NOTIFICA_SUPABASE_URL}/auth/v1`,
     })
   ).toString("base64url");
   const sessionJwt = `${headerB64}.${payloadB64}.sig`;
 
   const prevAnon = process.env.NOTIFICA_SUPABASE_ANON_KEY;
+  const prevViteAnon = process.env.VITE_SUPABASE_ANON_KEY;
   process.env.NOTIFICA_SUPABASE_ANON_KEY = "wrong-anon-key-notifica-123456";
+  delete process.env.VITE_SUPABASE_ANON_KEY;
   try {
+    // Sem chave anon válida, não usa service_role em /auth/v1/user
+    const invalidServerKeyRes = await originalFetch(`${baseUrl}/api/ecosystem/status`, {
+      headers: { Authorization: `Bearer ${sessionJwt}` },
+    });
+    assert.equal(invalidServerKeyRes.status, 503);
+
+    // Com VITE_SUPABASE_ANON_KEY válida, usa apenas as chaves anon
+    process.env.VITE_SUPABASE_ANON_KEY = "test-anon-key-notifica-123456";
+
     // Outras rotas bloqueadas com 403 PASSWORD_CHANGE_REQUIRED (não 401)
     const blockedNormalRes = await originalFetch(`${baseUrl}/api/ecosystem/status`, {
       headers: { Authorization: `Bearer ${sessionJwt}` },
@@ -827,18 +825,29 @@ test("Troca obrigatória diferencia token ausente/inválido, senha incorreta e f
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        currentPassword: "@12345",
+        currentPassword: "TempModalPassword#9",
         newPassword: "NovaSenhaPessoal#9",
       }),
     });
     assert.equal(changeOkRes.status, 200);
-    assert.equal(mockAuthUsers.find((u) => u.id === newId)?.app_metadata?.must_change_password, false);
+    assert.equal(mockAuthUsers.find((u) => u.id === ANALYST_ID)?.app_metadata?.must_change_password, false);
 
     const unlockedRes = await originalFetch(`${baseUrl}/api/ecosystem/status`, {
       headers: { Authorization: `Bearer ${sessionJwt}` },
     });
     assert.equal(unlockedRes.status, 200);
+
+    // Garante que a chave service_role nunca foi enviada a /auth/v1/user ou /auth/v1/token
+    assert.equal(
+      userOrTokenApiKeys.includes(String(process.env.NOTIFICA_SUPABASE_SERVICE_ROLE_KEY)),
+      false
+    );
   } finally {
     process.env.NOTIFICA_SUPABASE_ANON_KEY = prevAnon;
+    if (prevViteAnon === undefined) {
+      delete process.env.VITE_SUPABASE_ANON_KEY;
+    } else {
+      process.env.VITE_SUPABASE_ANON_KEY = prevViteAnon;
+    }
   }
 });

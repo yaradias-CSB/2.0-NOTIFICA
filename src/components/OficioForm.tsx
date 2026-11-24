@@ -25,6 +25,9 @@ import ConfirmModal from './ui/ConfirmModal';
 import { matchMunicipioMT } from '../services/carLookupService';
 import { sanitizeObject } from '../lib/security';
 import { getActiveAuthUser } from '../lib/supabase';
+import { useAuth } from '../contexts/AuthContext';
+import { SolicitarVistoriaModal } from './SolicitarVistoriaModal';
+import { formatCoordenadasGmsString } from '../types/solicitacoesVistoria';
 
 const INITIAL_STATE: OficioData = {
   protocolo: '',
@@ -100,9 +103,11 @@ const OficioForm: React.FC<OficioFormProps> = ({ onBack, initialData, readOnly }
     syncEntitiesFromForm,
     refreshEcosystem,
   } = useContext(EcosystemContext);
+  const { canEdit } = useAuth();
   const [loading, setLoading] = useState(false);
   const [savingToAdministra, setSavingToAdministra] = useState(false);
   const [registeringEntity, setRegisteringEntity] = useState<'empreendedor' | 'barragem' | 'rt' | null>(null);
+  const [isSolicitarVistoriaOpen, setIsSolicitarVistoriaOpen] = useState(false);
   const [confirmModal, setConfirmModal] = useState<{ isOpen: boolean; action: 'clear' | 'delete' }>({
     isOpen: false,
     action: 'clear',
@@ -632,40 +637,18 @@ const OficioForm: React.FC<OficioFormProps> = ({ onBack, initialData, readOnly }
       return;
     }
 
-    if (status === 'Concluído') {
-      const missingRegistrations: string[] = [];
-      if (!formData.empreendedorId) missingRegistrations.push('Empreendedor');
-      if (hasBarragemManual && !formData.barragemId) missingRegistrations.push('Barragem');
-      if (unregisteredRtNames.length > 0) {
-        missingRegistrations.push(`Responsável Técnico (${unregisteredRtNames.join(', ')})`);
-      }
-
-      if (missingRegistrations.length > 0) {
-        toast.error(
-          `Para concluir o ofício, cadastre antes na base Administra: ${missingRegistrations.join(', ')}. Você pode salvar como Rascunho temporariamente.`
-        );
-        return;
-      }
-    }
-
     setLoading(true);
     try {
       const sanitizedFormData = sanitizeObject(formData);
       const isFinalizing = status === 'Concluído';
 
-      let resolvedEmpreendedorId = sanitizedFormData.empreendedorId;
-      let resolvedBarragemId = sanitizedFormData.barragemId;
-      let resolvedRtIds = sanitizedFormData.responsavelTecnicoIds;
-
-      if (isFinalizing) {
-        const syncRes = await syncOficioEntitiesToAdministra(sanitizedFormData);
-        resolvedEmpreendedorId = syncRes.empreendedorId || sanitizedFormData.empreendedorId;
-        resolvedBarragemId = syncRes.barragemId || sanitizedFormData.barragemId;
-        resolvedRtIds =
-          syncRes.responsavelTecnicoIds.length > 0
-            ? syncRes.responsavelTecnicoIds
-            : sanitizedFormData.responsavelTecnicoIds;
-      }
+      const resolvedEmpreendedorId = sanitizedFormData.empreendedorId;
+      const resolvedBarragemId = sanitizedFormData.barragemId;
+      const resolvedRtIds = sanitizedFormData.responsavelTecnicoIds;
+      const hasUnlinkedEntities =
+        !resolvedEmpreendedorId ||
+        (hasBarragemManual && !resolvedBarragemId) ||
+        unregisteredRtNames.length > 0;
 
       const res = await saveOficio({
         ...sanitizedFormData,
@@ -700,13 +683,18 @@ const OficioForm: React.FC<OficioFormProps> = ({ onBack, initialData, readOnly }
         }));
       }
 
-      await Promise.all([refreshData?.(), isFinalizing ? refreshEcosystem() : Promise.resolve()]);
+      await refreshData?.();
 
       toast.success(
         isFinalizing
-          ? 'Ofício concluído e sincronizado com o Administra!'
-          : 'Rascunho salvo localmente (dados não vinculados mantidos temporariamente no rascunho).'
+          ? 'Ofício concluído e salvo no Notifica!'
+          : 'Rascunho salvo no Notifica.'
       );
+      if (isFinalizing && hasUnlinkedEntities) {
+        toast.warning(
+          'Cadastro no Administra não realizado: o ofício foi salvo no Notifica sem gravar novos cadastros na base do Administra.'
+        );
+      }
       if (status === 'Concluído') onBack();
     } catch (error: any) {
       console.warn('Notice saving oficio:', error);
@@ -831,6 +819,15 @@ const OficioForm: React.FC<OficioFormProps> = ({ onBack, initialData, readOnly }
           <button onClick={handleDownloadDocx} className="flex-1 sm:flex-none justify-center px-3 sm:px-4 py-2 bg-blue-600 text-white rounded-xl font-bold text-xs hover:bg-blue-700 transition-all flex items-center gap-1.5 shadow-lg shadow-blue-600/20">
             <Download size={14} /> Exportar Docx
           </button>
+          {canEdit && (
+            <button
+              type="button"
+              onClick={() => setIsSolicitarVistoriaOpen(true)}
+              className="flex-1 sm:flex-none justify-center px-3 sm:px-4 py-2 bg-slate-900 text-white rounded-xl font-bold text-xs hover:bg-slate-800 transition-all flex items-center gap-1.5 shadow-lg shadow-slate-900/15 whitespace-nowrap shrink-0 cursor-pointer"
+            >
+              <ClipboardList size={14} /> Solicitar vistoria
+            </button>
+          )}
         </div>
       </div>
 
@@ -1666,6 +1663,22 @@ const OficioForm: React.FC<OficioFormProps> = ({ onBack, initialData, readOnly }
         confirmLabel={confirmModal.action === 'delete' ? 'Excluir' : 'Limpar'}
         onConfirm={handleConfirmModalAction}
         onCancel={() => setConfirmModal((prev) => ({ ...prev, isOpen: false }))}
+      />
+
+      <SolicitarVistoriaModal
+        isOpen={isSolicitarVistoriaOpen}
+        onClose={() => setIsSolicitarVistoriaOpen(false)}
+        prefill={{
+          tipoReferencia: 'oficio',
+          referenciaId: formData.id || '',
+          processo: formData.processo || formData.protocolo || '',
+          barragemId: formData.barragemId || '',
+          nomeBarragem: formData.empreendimento || '',
+          municipio: formData.municipio || '',
+          coordenadas: formatCoordenadasGmsString(formData.coordenadasGMS),
+          empreendedorId: formData.empreendedorId || '',
+          empreendedorNome: formData.interessado || '',
+        }}
       />
     </div>
   );
