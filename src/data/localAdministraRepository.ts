@@ -68,7 +68,86 @@ function writeList<T>(key: string, items: T[]): void {
   }
 }
 
-function mergeByKey<T extends { id: string; updatedAt?: string }>(
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === 'string' && value.trim().length > 0;
+}
+
+function hasValidCoordenadasGms(value: unknown): boolean {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const obj = value as {
+    lat?: { g?: unknown; m?: unknown; s?: unknown };
+    long?: { g?: unknown; m?: unknown; s?: unknown };
+  };
+  const hasLat = Boolean(
+    obj.lat && (isNonEmptyString(obj.lat.g) || isNonEmptyString(obj.lat.m) || isNonEmptyString(obj.lat.s))
+  );
+  const hasLong = Boolean(
+    obj.long && (isNonEmptyString(obj.long.g) || isNonEmptyString(obj.long.m) || isNonEmptyString(obj.long.s))
+  );
+  return hasLat && hasLong;
+}
+
+function isEmptyMergeValue(key: string, value: unknown): boolean {
+  if (value === undefined || value === null) return true;
+  if (typeof value === 'string') return value.trim() === '';
+  if (key === 'coordenadasGMS') return !hasValidCoordenadasGms(value);
+  return false;
+}
+
+function parseTimestampMs(value: unknown): number {
+  if (!isNonEmptyString(value)) return 0;
+  const parsed = new Date(value).getTime();
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function mergePreservingLocalRecord<T extends { id: string; updatedAt?: string | null }>(
+  localItem: T,
+  remoteItem: T,
+  resolvedId: string
+): T {
+  const merged: Record<string, unknown> = { ...(localItem as Record<string, unknown>) };
+  const localRecord = localItem as Record<string, unknown>;
+  const remoteRecord = remoteItem as Record<string, unknown>;
+
+  const localTs = parseTimestampMs(localRecord.updatedAt);
+  const remoteTs = parseTimestampMs(remoteRecord.updatedAt);
+  const remoteIsStrictlyNewer = remoteTs > 0 && localTs > 0 ? remoteTs > localTs : remoteTs > 0 && localTs === 0;
+
+  for (const [key, remoteVal] of Object.entries(remoteRecord)) {
+    if (key === 'id') continue;
+    if (isEmptyMergeValue(key, remoteVal)) {
+      continue;
+    }
+
+    if (key === 'updatedAt') {
+      if (remoteTs > 0 && remoteIsStrictlyNewer) {
+        merged[key] = remoteVal;
+      }
+      continue;
+    }
+
+    const localVal = localRecord[key];
+    const localEmpty = isEmptyMergeValue(key, localVal);
+
+    if (localEmpty) {
+      merged[key] = remoteVal;
+      continue;
+    }
+
+    if (key === 'coordenadasGMS' || key === 'createdAt') {
+      continue;
+    }
+
+    if (remoteIsStrictlyNewer) {
+      merged[key] = remoteVal;
+    }
+  }
+
+  merged.id = resolvedId;
+  return merged as T;
+}
+
+export function mergeByKey<T extends { id: string; updatedAt?: string | null }>(
   localItems: T[],
   remoteItems: T[],
   secondaryKeyFn?: (item: T) => string
@@ -88,11 +167,7 @@ function mergeByKey<T extends { id: string; updatedAt?: string }>(
     const secKey = secondaryKeyFn ? secondaryKeyFn(item) : '';
     const existingById = byId.get(item.id);
     if (existingById) {
-      const currentTs = new Date(existingById.updatedAt || 0).getTime();
-      const nextTs = new Date(item.updatedAt || 0).getTime();
-      if (nextTs >= currentTs) {
-        byId.set(item.id, { ...existingById, ...item, id: item.id });
-      }
+      byId.set(item.id, mergePreservingLocalRecord(existingById, item, existingById.id));
       continue;
     }
 
@@ -101,7 +176,7 @@ function mergeByKey<T extends { id: string; updatedAt?: string }>(
     if (matchedLocalId && isLocalTempId(matchedLocalId)) {
       const current = byId.get(matchedLocalId)!;
       byId.delete(matchedLocalId);
-      byId.set(item.id, { ...current, ...item, id: item.id });
+      byId.set(item.id, mergePreservingLocalRecord(current, item, item.id));
       if (secKey) secondaryToLocalId.delete(secKey);
       continue;
     }

@@ -217,8 +217,13 @@ export const AdministraEntityPicker: React.FC<AdministraEntityPickerProps> = ({
     return base
       .filter((b) => {
         if (normalizeSearchText(b.nomeBarragem).includes(textQ)) return true;
+        if (normalizeSearchText(b.empreendimento).includes(textQ)) return true;
         if (normalizeSearchText(b.codigoSnisb).includes(textQ)) return true;
         if (normalizeSearchText(b.municipio).includes(textQ)) return true;
+        if (normalizeSearchText(b.processoReferencia).includes(textQ)) return true;
+        if (normalizeSearchText(b.cursoAguaBarrado).includes(textQ)) return true;
+        if (normalizeSearchText(b.car).includes(textQ)) return true;
+        if (carQ.length >= 3 && normalizeCarCode(b.car).includes(carQ)) return true;
         if (normalizeSearchText(b.empreendedorNome).includes(textQ)) return true;
         if (digitsQ.length >= 2 && normalizeDocumentNumber(b.empreendedorCpfCnpj || '').includes(digitsQ)) {
           return true;

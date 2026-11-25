@@ -826,9 +826,17 @@ export const EcossistemaAdministra: React.FC = () => {
       .filter((d) => !d.remoteConfigured && (d.systemId === 'CLASSIFICA' || d.systemId === 'FISCALIZA'))
       .map((d) => ECOSYSTEM_SYSTEM_LABELS[d.systemId].shortName);
 
+    const failedSystems = diagList
+      .filter((d) => Boolean(d.errorCode))
+      .map((d) => ECOSYSTEM_SYSTEM_LABELS[d.systemId].shortName);
+
     if (denied.length > 0) {
       toast.warning(
         `Leitura realizada, mas ${denied.join(', ')} bloqueou acesso (RLS/permissão). Pode ser necessária chave Service Role no servidor.`
+      );
+    } else if (failedSystems.length > 0) {
+      toast.error(
+        `Falha ao consultar ${failedSystems.join(', ')}. O cache local existente foi preservado.`
       );
     } else if (missing.length > 0 && totalEmps === 0 && totalBars === 0 && totalRts === 0) {
       toast.info(

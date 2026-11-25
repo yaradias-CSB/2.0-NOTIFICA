@@ -104,7 +104,10 @@ function readCachedIntegrated(): IntegratedSystemsDataPayload {
 }
 
 export class LocalEcosystemRepository implements EcosystemFederationRepository {
-  constructor(private readonly administraRepo: AdministraRegistryRepository) {}
+  constructor(
+    private readonly administraRepo: AdministraRegistryRepository,
+    private readonly fetchImpl: typeof fetch = authFetch
+  ) {}
 
   async getChangeRequests(): Promise<ChangeRequest[]> {
     return readList<ChangeRequest>(ECOSYSTEM_STORAGE_KEYS.CHANGE_REQUESTS).sort(
@@ -254,16 +257,41 @@ export class LocalEcosystemRepository implements EcosystemFederationRepository {
 
   async getIntegratedSystemsData(system?: EcosystemSystemId): Promise<IntegratedSystemsDataPayload> {
     const cached = readCachedIntegrated();
-    if (typeof window === 'undefined' || (typeof navigator !== 'undefined' && !navigator.onLine)) {
+    if (typeof window === 'undefined' || (typeof navigator !== 'undefined' && navigator.onLine === false)) {
       return cached;
     }
 
     try {
       const query = system ? `?system=${encodeURIComponent(system)}` : '';
-      const response = await authFetch(`/api/ecosystem/integrated-data${query}`);
-      if (!response.ok) return cached;
+      const response = await this.fetchImpl(`/api/ecosystem/integrated-data${query}`);
+      const data = (await response
+        .json()
+        .catch(() => null)) as (Partial<IntegratedSystemsDataPayload> & { errorCode?: string }) | null;
 
-      const data = (await response.json()) as Partial<IntegratedSystemsDataPayload>;
+      if (!response.ok || !data) {
+        if (data?.diagnostics) {
+          return {
+            ...cached,
+            diagnostics: {
+              ...cached.diagnostics,
+              ...data.diagnostics,
+            },
+          };
+        }
+        return cached;
+      }
+
+      const administraError = Boolean(data.diagnostics?.ADMINISTRA?.errorCode);
+      if ((system === 'ADMINISTRA' || !system) && administraError) {
+        return {
+          ...cached,
+          diagnostics: {
+            ...cached.diagnostics,
+            ...(data.diagnostics || {}),
+          },
+        };
+      }
+
       const incomingEmps = Array.isArray(data.empreendedores) ? (data.empreendedores as EmpreendedorCanonico[]) : [];
       const incomingBars = Array.isArray(data.barragens) ? (data.barragens as BarragemCanonica[]) : [];
       const incomingRts = Array.isArray(data.responsaveisTecnicos)

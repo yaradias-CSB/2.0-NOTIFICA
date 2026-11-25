@@ -3,6 +3,7 @@ import dotenv from "dotenv";
 import crypto from "crypto";
 import { createSolicitacoesVistoriaRouter } from "./server/solicitacoesVistoria";
 import {
+  type AdministraBarragemV2Dto,
   checkAdministraHealth,
   fetchAdministraBarragens,
   isAdministraConfigured,
@@ -204,10 +205,12 @@ function maskEmpreendedorItem<T extends ReturnType<typeof mapRemoteEmpreendedor>
   };
 }
 
-function maskBarragemItem<T extends ReturnType<typeof mapRemoteBarragem>>(item: T): T {
+function maskBarragemItem<T extends { id: string; empreendedorCpfCnpj?: string }>(item: T): T {
   return {
     ...item,
-    empreendedorCpfCnpj: item.empreendedorCpfCnpj ? maskCpfCnpjValue(item.empreendedorCpfCnpj) : undefined,
+    ...(item.empreendedorCpfCnpj
+      ? { empreendedorCpfCnpj: maskCpfCnpjValue(item.empreendedorCpfCnpj) }
+      : {}),
   };
 }
 
@@ -617,49 +620,195 @@ function mapRemoteEmpreendedor(row: Record<string, any>, fallbackSystem: "ADMINI
   };
 }
 
-function mapRemoteBarragem(row: Record<string, any>, fallbackSystem: "ADMINISTRA" | "CLASSIFICA" | "NOTIFICA" | "FISCALIZA" = "ADMINISTRA") {
-  const nomeBarragem = String(
-    row.nome_barragem ??
-      row.nomeBarragem ??
-      row.nome ??
-      row.barragem ??
-      row.empreendimento ??
-      row.nome_fantasia ??
-      row.localizacao_empreendimento ??
-      ""
-  ).trim();
-  const snisb = optionalText(row.codigo_snisb ?? row.codigoSnisb ?? row.snisb);
-  const sourceSystem = normalizeSystemId(row.source_system ?? row.sourceSystem, fallbackSystem);
-  const municipio = String(row.municipio ?? row.municipio_empreendimento ?? "");
+function parseGmsPartString(raw: unknown): { g: string; m: string; s: string } | undefined {
+  if (typeof raw !== "string") return undefined;
+  const trimmed = raw.trim();
+  if (!trimmed) return undefined;
+  const match = trimmed.match(/(\d+)\s*[°º]\s*(\d+)\s*['’]\s*([\d.,]+)\s*["”]?/);
+  if (!match) return undefined;
   return {
-    id: String(row.id ?? `${sourceSystem.toLowerCase()}_bar_${normalizePlainText(snisb || nomeBarragem).replace(/\s+/g, "_") || Math.random().toString(36).slice(2, 8)}`),
-    empreendedorId: String(row.empreendedor_id ?? row.empreendedorId ?? ""),
-    empreendedorNome: optionalText(row.empreendedor_nome ?? row.empreendedorNome ?? row.empreendedor ?? row.identificacao_empreendedor ?? row.interessado),
-    empreendedorCpfCnpj: optionalText(row.empreendedor_cpf_cnpj ?? row.empreendedorCpfCnpj ?? row.cpf_cnpj ?? row.documento_identificacao),
+    g: match[1],
+    m: match[2].padStart(2, "0"),
+    s: match[3].replace(",", "."),
+  };
+}
+
+function normalizeCoordenadasGms(raw: unknown): {
+  lat: { g: string; m: string; s: string };
+  long: { g: string; m: string; s: string };
+} | undefined {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined;
+  const obj = raw as Record<string, unknown>;
+  const latObj = obj.lat && typeof obj.lat === "object" ? (obj.lat as Record<string, unknown>) : null;
+  const longCandidate = obj.long ?? obj.lng;
+  const longObj =
+    longCandidate && typeof longCandidate === "object"
+      ? (longCandidate as Record<string, unknown>)
+      : null;
+  if (!latObj || !longObj) return undefined;
+  const latG = optionalText(latObj.g);
+  const longG = optionalText(longObj.g);
+  if (!latG && !longG) return undefined;
+  return {
+    lat: {
+      g: latG ?? "0",
+      m: optionalText(latObj.m) ?? "00",
+      s: optionalText(latObj.s) ?? "00",
+    },
+    long: {
+      g: longG ?? "0",
+      m: optionalText(longObj.m) ?? "00",
+      s: optionalText(longObj.s) ?? "00",
+    },
+  };
+}
+
+export function mapRemoteBarragem(row: Record<string, any>, fallbackSystem: "ADMINISTRA" | "CLASSIFICA" | "NOTIFICA" | "FISCALIZA" = "ADMINISTRA") {
+  const nomeBarragem =
+    optionalText(row.nomeBarragem) ??
+    optionalText(row.nome_barragem) ??
+    optionalText(row.nome) ??
+    optionalText(row.barragem) ??
+    optionalText(row.empreendimento) ??
+    optionalText(row.nomeFantasia) ??
+    optionalText(row.nome_fantasia) ??
+    optionalText(row.localizacaoEmpreendimento) ??
+    optionalText(row.localizacao_empreendimento) ??
+    "";
+  const empreendimento = optionalText(row.empreendimento);
+  const snisb = optionalText(row.codigoSnisb ?? row.snisb ?? row.codigo_snisb);
+  const sourceSystem = normalizeSystemId(row.sourceSystem ?? row.source_system, fallbackSystem);
+  const municipio =
+    optionalText(row.municipio ?? row.municipioEmpreendimento ?? row.municipio_empreendimento) ?? "";
+  const latGmsParsed = parseGmsPartString(row.latGms ?? row.lat_gms);
+  const longGmsParsed = parseGmsPartString(row.longGms ?? row.long_gms);
+  const coordenadasGMS =
+    normalizeCoordenadasGms(row.coordenadasGMS ?? row.coordenadasGms ?? row.coordenadas_gms) ??
+    decimalPairToGms(row.latitude, row.longitude) ??
+    (latGmsParsed && longGmsParsed ? { lat: latGmsParsed, long: longGmsParsed } : undefined);
+
+  return {
+    id: optionalText(row.id) ?? `${sourceSystem.toLowerCase()}_bar_${normalizePlainText(snisb || nomeBarragem).replace(/\s+/g, "_") || Math.random().toString(36).slice(2, 8)}`,
+    empreendedorId: optionalText(row.empreendedorId ?? row.empreendedor_id) ?? "",
+    empreendedorNome: optionalText(
+      row.empreendedorNome ??
+        row.identificacaoEmpreendedor ??
+        row.empreendedor_nome ??
+        (typeof row.empreendedor === "string" ? row.empreendedor : undefined) ??
+        row.identificacao_empreendedor ??
+        row.interessado
+    ),
+    empreendedorCpfCnpj: optionalText(
+      row.empreendedorCpfCnpj ??
+        row.cpfCnpj ??
+        row.documentoIdentificacao ??
+        row.empreendedor_cpf_cnpj ??
+        row.cpf_cnpj ??
+        row.documento_identificacao
+    ),
     nomeBarragem,
+    ...(empreendimento ? { empreendimento } : {}),
     codigoSnisb: snisb,
-    processoReferencia: optionalText(row.processo_referencia ?? row.processoReferencia ?? row.processo ?? row.num_processo),
+    processoReferencia: optionalText(
+      row.processoReferencia ?? row.processo ?? row.numProcesso ?? row.processo_referencia ?? row.num_processo
+    ),
     municipio,
     uf: optionalText(row.uf) ?? "MT",
-    cursoAguaBarrado: optionalText(row.curso_agua_barrado ?? row.cursoAguaBarrado ?? row.curso_agua ?? row.nome_curso_agua_barrado),
-    usoPreponderante: optionalText(row.uso_preponderante ?? row.usoPreponderante),
-    situacaoEmpreendimento: optionalText(row.situacao_empreendimento ?? row.situacaoEmpreendimento ?? row.situacao),
-    tipoBarragem: optionalText(row.tipo_barragem ?? row.tipoBarragem),
-    coordenadasGMS: row.coordenadas_gms ?? row.coordenadasGMS ?? decimalPairToGms(row.latitude, row.longitude),
-    altura: optionalText(row.altura ?? row.altura_barragem),
-    volume: optionalText(row.volume ?? row.volume_barragem),
-    larguraCoroamento: optionalText(row.largura_coroamento ?? row.larguraCoroamento),
-    comprimentoCoroamento: optionalText(row.comprimento_coroamento ?? row.comprimentoCoroamento),
-    classificacaoBarragem: optionalText(row.classificacao_barragem ?? row.classificacaoBarragem ?? row.classificacao),
-    classificacaoDPA: optionalText(row.classificacao_dpa ?? row.classificacaoDPA ?? row.dano_potencial ?? row.dpa),
-    classificacaoCRI: optionalText(row.classificacao_cri ?? row.classificacaoCRI ?? row.categoria_risco ?? row.cri),
-    portariaClassificacao: optionalText(row.portaria_classificacao ?? row.portariaClassificacao),
-    parecerClassificacao: optionalText(row.parecer_classificacao ?? row.parecerClassificacao),
+    cursoAguaBarrado: optionalText(
+      row.cursoAguaBarrado ??
+        row.cursoAgua ??
+        row.nomeCursoAguaBarrado ??
+        row.curso_agua_barrado ??
+        row.curso_agua ??
+        row.nome_curso_agua_barrado
+    ),
+    usoPreponderante: optionalText(row.usoPreponderante ?? row.uso_preponderante),
+    situacaoEmpreendimento: optionalText(
+      row.situacaoEmpreendimento ?? row.situacao ?? row.situacao_empreendimento
+    ),
+    tipoBarragem: optionalText(row.tipoBarragem ?? row.tipo_barragem),
+    coordenadasGMS,
+    altura: optionalText(row.altura ?? row.alturaBarragem ?? row.altura_barragem),
+    volume: optionalText(row.volume ?? row.volumeBarragem ?? row.volume_barragem),
+    larguraCoroamento: optionalText(row.larguraCoroamento ?? row.largura_coroamento),
+    comprimentoCoroamento: optionalText(row.comprimentoCoroamento ?? row.comprimento_coroamento),
+    classificacaoBarragem: optionalText(
+      row.classificacaoBarragem ?? row.classificacao ?? row.classificacao_barragem
+    ),
+    classificacaoDPA: optionalText(
+      row.classificacaoDPA ??
+        row.classificacaoDpa ??
+        row.danoPotencial ??
+        row.dpa ??
+        row.classificacao_dpa ??
+        row.dano_potencial
+    ),
+    classificacaoCRI: optionalText(
+      row.classificacaoCRI ??
+        row.classificacaoCri ??
+        row.categoriaRisco ??
+        row.cri ??
+        row.classificacao_cri ??
+        row.categoria_risco
+    ),
+    portariaClassificacao: optionalText(row.portariaClassificacao ?? row.portaria_classificacao),
+    parecerClassificacao: optionalText(row.parecerClassificacao ?? row.parecer_classificacao),
     sourceSystem,
     registryOwnerSystem: "ADMINISTRA" as const,
-    createdByAnalyst: optionalText(row.created_by_analyst ?? row.createdByAnalyst ?? row.analista),
-    createdAt: row.created_at ?? row.createdAt ?? new Date().toISOString(),
-    updatedAt: row.updated_at ?? row.updatedAt ?? new Date().toISOString(),
+    createdByAnalyst: optionalText(row.createdByAnalyst ?? row.analista ?? row.created_by_analyst),
+    createdAt: optionalText(row.createdAt ?? row.created_at) ?? new Date().toISOString(),
+    updatedAt: optionalText(row.updatedAt ?? row.updated_at) ?? new Date().toISOString(),
+  };
+}
+
+export function mapAdministraBarragemV2(dto: AdministraBarragemV2Dto) {
+  const snisb = optionalText(dto.snisb);
+  const empreendimento = optionalText(dto.empreendimento);
+  const nomeBarragem =
+    optionalText(dto.nome) ??
+    empreendimento ??
+    snisb ??
+    "";
+  const empreendedorId = optionalText(dto.empreendedorId);
+  const car = optionalText(dto.car);
+  const processoReferencia = optionalText(dto.processo);
+  const municipio = optionalText(dto.municipio);
+  const municipioIbge = optionalText(dto.municipioIbge);
+  const uf = optionalText(dto.uf);
+  const cursoAguaBarrado = optionalText(dto.cursoAgua);
+  const situacaoEmpreendimento = optionalText(dto.situacao);
+  const coordenadasGMS = decimalPairToGms(dto.latitude, dto.longitude);
+  const altura = optionalText(dto.altura);
+  const volume = optionalText(dto.volume);
+  const classificacaoDPA = optionalText(dto.danoPotencial);
+  const classificacaoCRI = optionalText(dto.categoriaRisco);
+  const classificadaEm = optionalText(dto.classificadaEm);
+  const createdAt = optionalText(dto.createdAt);
+  const updatedAt = optionalText(dto.updatedAt);
+
+  return {
+    id: dto.id.trim(),
+    nomeBarragem,
+    ...(empreendedorId ? { empreendedorId } : {}),
+    ...(empreendimento ? { empreendimento } : {}),
+    ...(car ? { car } : {}),
+    ...(snisb ? { codigoSnisb: snisb } : {}),
+    ...(processoReferencia ? { processoReferencia } : {}),
+    ...(municipio ? { municipio } : {}),
+    ...(municipioIbge ? { municipioIbge } : {}),
+    ...(uf ? { uf } : {}),
+    ...(cursoAguaBarrado ? { cursoAguaBarrado } : {}),
+    ...(situacaoEmpreendimento ? { situacaoEmpreendimento } : {}),
+    ...(coordenadasGMS ? { coordenadasGMS } : {}),
+    ...(altura ? { altura } : {}),
+    ...(volume ? { volume } : {}),
+    ...(classificacaoDPA ? { classificacaoDPA } : {}),
+    ...(classificacaoCRI ? { classificacaoCRI } : {}),
+    ...(classificadaEm ? { classificadaEm } : {}),
+    sourceSystem: "ADMINISTRA" as const,
+    registryOwnerSystem: "ADMINISTRA" as const,
+    ...(createdAt ? { createdAt } : {}),
+    ...(updatedAt ? { updatedAt } : {}),
   };
 }
 
@@ -994,14 +1143,22 @@ function dedupeEmpreendedores(items: ReturnType<typeof mapRemoteEmpreendedor>[])
   return Array.from(map.values());
 }
 
-function dedupeBarragens(items: ReturnType<typeof mapRemoteBarragem>[]) {
-  const map = new Map<string, ReturnType<typeof mapRemoteBarragem>>();
+function dedupeBarragens<
+  T extends {
+    id: string;
+    sourceSystem: string;
+    nomeBarragem: string;
+    codigoSnisb?: string;
+    municipio?: string;
+  },
+>(items: T[]): T[] {
+  const map = new Map<string, T>();
   for (const item of items) {
     if (!item.nomeBarragem && !item.codigoSnisb) continue;
     const key =
       item.id && !isSyntheticGeneratedId(item.id)
         ? `${item.sourceSystem}::id::${item.id}`
-        : `${item.sourceSystem}::${normalizePlainText(item.codigoSnisb || `${item.nomeBarragem}_${item.municipio}`)}`;
+        : `${item.sourceSystem}::${normalizePlainText(item.codigoSnisb || `${item.nomeBarragem}_${item.municipio || ""}`)}`;
     if (!map.has(key)) {
       map.set(key, item);
     }
@@ -1237,7 +1394,9 @@ app.get("/api/ecosystem/integrated-data", async (req, res) => {
       : ["CLASSIFICA", "FISCALIZA", "ADMINISTRA", "NOTIFICA"];
 
   const allEmps: ReturnType<typeof mapRemoteEmpreendedor>[] = [];
-  const allBars: ReturnType<typeof mapRemoteBarragem>[] = [];
+  const allBars: Array<
+    ReturnType<typeof mapRemoteBarragem> | ReturnType<typeof mapAdministraBarragemV2>
+  > = [];
   const allRts: ReturnType<typeof mapRemoteRT>[] = [];
   const allProducts: ReturnType<typeof extractDerivedEntitiesFromProductRow>["product"][] = [];
 
@@ -1252,6 +1411,7 @@ app.get("/api/ecosystem/integrated-data", async (req, res) => {
       barragensCount: number;
       rtsCount: number;
       productsCount: number;
+      errorCode?: string;
     }
   > = {
     ADMINISTRA: {
@@ -1296,24 +1456,57 @@ app.get("/api/ecosystem/integrated-data", async (req, res) => {
     },
   };
 
+  let administraFailure: { status: number; errorCode: string; error: string } | null = null;
+
   await Promise.all(
     targetSystems.map(async (sysId) => {
       if (sysId === "ADMINISTRA") {
         if (!isAdministraConfigured()) return;
 
+        // Leitura paginada via GET /api/v2/barragens (limit=500, cursor=nextCursor).
         const [healthRes, barragensRes] = await Promise.all([
           checkAdministraHealth(),
           fetchAdministraBarragens(),
         ]);
 
-        const sysBars = barragensRes.barragensRows.map((row) => mapRemoteBarragem(row, "ADMINISTRA"));
+        if (!barragensRes.ok) {
+          const errorCode = barragensRes.errorCode || "ADMINISTRA_HTTP_ERROR";
+          const isContractOrPaginationError =
+            errorCode === "ADMINISTRA_INVALID_CONTRACT" ||
+            errorCode === "ADMINISTRA_INVALID_JSON" ||
+            errorCode === "ADMINISTRA_PAGINATION_LIMIT";
+          const errorMessage = isContractOrPaginationError
+            ? "Resposta incompatível com o contrato da API do Administra."
+            : "Não foi possível consultar a base do Administra.";
+
+          administraFailure = {
+            status: barragensRes.timedOut ? 504 : 502,
+            errorCode,
+            error: errorMessage,
+          };
+
+          diagnostics.ADMINISTRA = {
+            systemId: "ADMINISTRA",
+            remoteConfigured: true,
+            reachable: false,
+            authDenied: Boolean(barragensRes.authDenied || healthRes.authDenied),
+            empreendedoresCount: 0,
+            barragensCount: 0,
+            rtsCount: 0,
+            productsCount: 0,
+            errorCode,
+          };
+          return;
+        }
+
+        const sysBars = barragensRes.barragensRows.map((row) => mapAdministraBarragemV2(row));
         const uniqueBars = dedupeBarragens(sysBars);
 
         diagnostics.ADMINISTRA = {
           systemId: "ADMINISTRA",
           remoteConfigured: true,
-          reachable: Boolean(barragensRes.ok || healthRes.ok),
-          authDenied: Boolean(barragensRes.authDenied || (!barragensRes.ok && healthRes.authDenied)),
+          reachable: true,
+          authDenied: false,
           empreendedoresCount: 0,
           barragensCount: uniqueBars.length,
           rtsCount: 0,
@@ -1411,7 +1604,14 @@ app.get("/api/ecosystem/integrated-data", async (req, res) => {
 
   const includeFullDoc = canViewFullDocument(req);
 
-  return res.json({
+  const responsePayload = {
+    ...(administraFailure
+      ? {
+          error: administraFailure.error,
+          errorCode: administraFailure.errorCode,
+          partial: false,
+        }
+      : {}),
     empreendedores: includeFullDoc ? allEmps : allEmps.map(maskEmpreendedorItem),
     barragens: includeFullDoc ? allBars : allBars.map(maskBarragemItem),
     responsaveisTecnicos: includeFullDoc ? allRts : allRts.map(maskRtItem),
@@ -1423,7 +1623,13 @@ app.get("/api/ecosystem/integrated-data", async (req, res) => {
         })),
     diagnostics,
     fetchedAt: new Date().toISOString(),
-  });
+  };
+
+  if (administraFailure) {
+    return res.status(administraFailure.status).json(responsePayload);
+  }
+
+  return res.json(responsePayload);
 });
 
 // Public GIS CAR/MT lookup by decimal coordinates (SICAR / SEMA-MT WFS)
@@ -1521,7 +1727,8 @@ app.get("/api/gis/car-by-coords", async (req, res) => {
   }
 });
 
-// Central Registry Proxy (Administra Barragens API 2.0 S2S: apenas /api/v2/barragens confirmado)
+// Central Registry Proxy (Administra Barragens API 2.0 S2S-V2: GET /api/v2/barragens
+// paginado com limit=500 e cursor=nextCursor; busca /api/registry/search é local nos itens carregados)
 app.get("/api/registry/bootstrap", async (req, res) => {
   const bundle = await fetchAdministraBarragens();
   if (!bundle.configured) {
@@ -1533,11 +1740,26 @@ app.get("/api/registry/bootstrap", async (req, res) => {
     });
   }
 
-  const barragens = bundle.barragensRows.map((row) => mapRemoteBarragem(row, "ADMINISTRA"));
+  if (!bundle.ok) {
+    return res.json({
+      remoteEnabled: false,
+      errorCode: bundle.errorCode,
+      error:
+        bundle.errorCode === "ADMINISTRA_INVALID_CONTRACT" ||
+        bundle.errorCode === "ADMINISTRA_PAGINATION_LIMIT"
+          ? "Resposta incompatível com o contrato da API do Administra."
+          : "Não foi possível consultar a base do Administra.",
+      empreendedores: [],
+      barragens: [],
+      responsaveisTecnicos: [],
+    });
+  }
+
+  const barragens = bundle.barragensRows.map((row) => mapAdministraBarragemV2(row));
   const includeFullDoc = canViewFullDocument(req);
 
   return res.json({
-    remoteEnabled: bundle.ok,
+    remoteEnabled: true,
     empreendedores: [],
     barragens: includeFullDoc ? barragens : barragens.map(maskBarragemItem),
     responsaveisTecnicos: [],
@@ -1558,29 +1780,49 @@ app.get("/api/registry/search", async (req, res) => {
   }
 
   const clean = q.replace(/[%(),]/g, "");
-  const digits = normalizeDigits(clean);
   const normText = clean
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "")
     .toLowerCase();
 
   const bundle = await fetchAdministraBarragens();
+  if (!bundle.ok) {
+    return res.json({
+      remoteEnabled: false,
+      errorCode: bundle.errorCode,
+      error:
+        bundle.errorCode === "ADMINISTRA_INVALID_CONTRACT" ||
+        bundle.errorCode === "ADMINISTRA_PAGINATION_LIMIT"
+          ? "Resposta incompatível com o contrato da API do Administra."
+          : "Não foi possível consultar a base do Administra.",
+      empreendedores: [],
+      barragens: [],
+      responsaveisTecnicos: [],
+    });
+  }
 
   const barragens = bundle.barragensRows
-    .map((row) => mapRemoteBarragem(row, "ADMINISTRA"))
+    .map((row) => mapAdministraBarragemV2(row))
     .filter((b) => {
       if (empreendedorId && b.empreendedorId !== empreendedorId) return false;
       if (!clean) return true;
       const bName = b.nomeBarragem.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
-      const mun = b.municipio.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+      const empdt = (b.empreendimento || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+      const mun = (b.municipio || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
       const snisb = (b.codigoSnisb || "").toLowerCase();
-      const empName = (b.empreendedorNome || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+      const processo = (b.processoReferencia || "").toLowerCase();
+      const car = (b.car || "").toLowerCase();
+      const cursoAgua = (b.cursoAguaBarrado || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+      const empId = (b.empreendedorId || "").toLowerCase();
       return (
         bName.includes(normText) ||
+        empdt.includes(normText) ||
         mun.includes(normText) ||
         snisb.includes(normText) ||
-        empName.includes(normText) ||
-        (digits.length >= 3 && normalizeDigits(b.empreendedorCpfCnpj).includes(digits))
+        processo.includes(normText) ||
+        car.includes(normText) ||
+        cursoAgua.includes(normText) ||
+        empId.includes(normText)
       );
     })
     .slice(0, 100);
@@ -1588,7 +1830,7 @@ app.get("/api/registry/search", async (req, res) => {
   const includeFullDoc = canViewFullDocument(req);
 
   return res.json({
-    remoteEnabled: Boolean(bundle.configured && bundle.ok),
+    remoteEnabled: true,
     empreendedores: [],
     barragens: includeFullDoc ? barragens : barragens.map(maskBarragemItem),
     responsaveisTecnicos: [],

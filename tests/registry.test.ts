@@ -1,14 +1,23 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import crypto from "node:crypto";
 import http from "node:http";
 import { LocalAdministraRepository } from "../src/data/localAdministraRepository.ts";
+
+const { publicKey: TEST_PUBLIC_KEY, privateKey: TEST_PRIVATE_KEY } = crypto.generateKeyPairSync("ed25519");
+const TEST_KEY_ID = "registry-test-s2s-key";
+const EXPECTED_EMPTY_BODY_SHA256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
 
 process.env.NODE_ENV = "test";
 process.env.NOTIFICA_SUPABASE_URL = "https://notifica-test.supabase.co";
 process.env.NOTIFICA_SUPABASE_ANON_KEY = "test-anon-key-notifica-123456";
 process.env.NOTIFICA_SUPABASE_SERVICE_ROLE_KEY = "test-service-role-key-notifica-123456";
 process.env.ADMINISTRA_API_URL = "https://administra-api.internal.test";
-process.env.ADMINISTRA_API_TOKEN = "test-s2s-token-administra-123456";
+process.env.ADMINISTRA_S2S_KEY_ID = TEST_KEY_ID;
+process.env.ADMINISTRA_S2S_PRIVATE_KEY_PEM = TEST_PRIVATE_KEY.export({
+  type: "pkcs8",
+  format: "pem",
+}).toString();
 
 const ADMIN_ID = "11111111-1111-4111-8111-111111111111";
 const ANALYST_ID = "22222222-2222-4222-8222-222222222222";
@@ -93,8 +102,36 @@ function installMockFetch(baseServerUrl: string) {
         return new Response(JSON.stringify({ error: "External write should not be called" }), { status: 500 });
       }
 
-      if (headers.get("Authorization") !== "Bearer test-s2s-token-administra-123456" || headers.has("apikey")) {
-        return new Response(JSON.stringify({ error: "Unauthorized S2S request" }), { status: 401 });
+      if (headers.has("Authorization") || headers.has("apikey")) {
+        return new Response(JSON.stringify({ error: "Authorization Bearer not accepted" }), { status: 401 });
+      }
+
+      const expectedCanonicalQuery =
+        url.pathname === "/api/v2/barragens" ? "limit=500" : "";
+      const contentTypeNormalized = (headers.get("content-type") || "").split(";")[0].trim().toLowerCase();
+      const keyId = headers.get("x-s2s-key-id") || "";
+      const timestamp = headers.get("x-s2s-timestamp") || "";
+      const jti = headers.get("x-s2s-jti") || "";
+      const canonicalMsg =
+        `S2S-V2\n` +
+        `${method}\n` +
+        `${url.pathname}\n` +
+        `${expectedCanonicalQuery}\n` +
+        `${contentTypeNormalized}\n` +
+        `${EXPECTED_EMPTY_BODY_SHA256}\n` +
+        `${TEST_KEY_ID}\n` +
+        `${timestamp}\n` +
+        `${jti}\n` +
+        `|`;
+      const sig = headers.get("x-s2s-signature") || "";
+      const verified =
+        keyId === TEST_KEY_ID &&
+        (headers.get("x-s2s-body-sha256") || "") === EXPECTED_EMPTY_BODY_SHA256 &&
+        Boolean(sig) &&
+        crypto.verify(null, Buffer.from(canonicalMsg, "utf8"), TEST_PUBLIC_KEY, Buffer.from(sig, "base64url"));
+
+      if (!verified) {
+        return new Response(JSON.stringify({ error: "Invalid S2S-V2 signature" }), { status: 401 });
       }
 
       registraReadExternalCalls += 1;
@@ -104,17 +141,35 @@ function installMockFetch(baseServerUrl: string) {
       if (url.pathname === "/api/v2/barragens") {
         return new Response(
           JSON.stringify({
-            barragens: [
+            success: true,
+            apiVersion: "2.0",
+            items: [
               {
                 id: "bar-adm-1",
-                empreendedor_id: "emp-adm-1",
-                empreendedor_nome: "Empreendedor Oficial Administra",
-                nome_barragem: "Barragem Oficial",
+                empreendedorId: "emp-adm-1",
+                nome: "Barragem Oficial",
+                empreendimento: "Fazenda Oficial",
+                car: "MT-5103403-OFICIAL",
+                snisb: "SNISB-001",
+                processo: "2026/000100",
                 municipio: "Cuiabá",
+                municipioIbge: "5103403",
                 uf: "MT",
-                source_system: "ADMINISTRA",
+                cursoAgua: "Rio Cuiabá",
+                latitude: -15.6,
+                longitude: -56.1,
+                altura: 15,
+                volume: 100000,
+                danoPotencial: "Alto",
+                categoriaRisco: "Médio",
+                classificadaEm: "2026-01-15T00:00:00.000Z",
+                situacao: "Em operação",
+                createdAt: "2026-01-01T00:00:00.000Z",
+                updatedAt: "2026-02-01T00:00:00.000Z",
               },
             ],
+            pagination: { limit: 500, hasMore: false, nextCursor: null },
+            maskingPolicy: "S2S_MASKED",
           }),
           { status: 200, headers: { "Content-Type": "application/json" } }
         );
@@ -246,16 +301,30 @@ test("Rotas de leitura do Administra continuam protegidas (401) e usam somente /
   const bootBody = (await authBootstrap.json()) as {
     remoteEnabled?: boolean;
     empreendedores: Array<{ id: string }>;
-    barragens: Array<{ id: string; nomeBarragem: string }>;
+    barragens: Array<{
+      id: string;
+      nomeBarragem: string;
+      empreendedorId: string;
+      empreendimento?: string;
+      codigoSnisb?: string;
+      municipio: string;
+      uf: string;
+    }>;
     responsaveisTecnicos: Array<{ id: string }>;
   };
   assert.equal(bootBody.remoteEnabled, true);
   assert.equal(bootBody.empreendedores.length, 0);
   assert.equal(bootBody.barragens.length, 1);
   assert.equal(bootBody.barragens[0]?.id, "bar-adm-1");
+  assert.equal(bootBody.barragens[0]?.nomeBarragem, "Barragem Oficial");
+  assert.equal(bootBody.barragens[0]?.empreendedorId, "emp-adm-1");
+  assert.equal(bootBody.barragens[0]?.empreendimento, "Fazenda Oficial");
+  assert.equal(bootBody.barragens[0]?.codigoSnisb, "SNISB-001");
+  assert.equal(bootBody.barragens[0]?.municipio, "Cuiabá");
+  assert.equal(bootBody.barragens[0]?.uf, "MT");
   assert.equal(bootBody.responsaveisTecnicos.length, 0);
 
-  const authSearch = await originalFetch(`${baseUrl}/api/registry/search?q=Oficial`, {
+  const authSearch = await originalFetch(`${baseUrl}/api/registry/search?q=Fazenda%20Oficial`, {
     headers: { Authorization: "Bearer token-analyst" },
   });
   assert.equal(authSearch.status, 200);
@@ -268,6 +337,7 @@ test("Rotas de leitura do Administra continuam protegidas (401) e usam somente /
   assert.equal(searchBody.remoteEnabled, true);
   assert.equal(searchBody.empreendedores.length, 0);
   assert.equal(searchBody.barragens[0]?.id, "bar-adm-1");
+  assert.equal(searchBody.barragens[0]?.nomeBarragem, "Barragem Oficial");
   assert.equal(searchBody.responsaveisTecnicos.length, 0);
   assert.ok(registraReadExternalCalls > 0);
   assert.equal(registraWriteExternalCalls, 0);

@@ -50,14 +50,17 @@ export interface EmpreendedorCanonico {
 
 export interface BarragemCanonica {
   id: string;
-  empreendedorId: string;
+  empreendedorId?: string;
   empreendedorNome?: string;
   empreendedorCpfCnpj?: string;
   nomeBarragem: string;
+  empreendimento?: string;
+  car?: string;
   codigoSnisb?: string;
   processoReferencia?: string;
-  municipio: string;
-  uf: string;
+  municipio?: string;
+  municipioIbge?: string;
+  uf?: string;
   cursoAguaBarrado?: string;
   usoPreponderante?: string;
   situacaoEmpreendimento?: string;
@@ -73,13 +76,14 @@ export interface BarragemCanonica {
   classificacaoBarragem?: string;
   classificacaoDPA?: string;
   classificacaoCRI?: string;
+  classificadaEm?: string;
   portariaClassificacao?: string;
   parecerClassificacao?: string;
   sourceSystem: EcosystemSystemId;
   registryOwnerSystem: 'ADMINISTRA';
   createdByAnalyst?: string;
-  createdAt: string;
-  updatedAt: string;
+  createdAt?: string | null;
+  updatedAt?: string | null;
 }
 
 export interface ArtVinculoCanonico {
@@ -170,6 +174,7 @@ export interface EcosystemRemoteSystemDiagnostic {
   barragensCount: number;
   rtsCount: number;
   productsCount: number;
+  errorCode?: string;
 }
 
 export interface IntegratedSystemsDataPayload {
