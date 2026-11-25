@@ -2,6 +2,11 @@ import express from "express";
 import dotenv from "dotenv";
 import crypto from "crypto";
 import { createSolicitacoesVistoriaRouter } from "./server/solicitacoesVistoria";
+import {
+  checkAdministraHealth,
+  fetchAdministraBarragens,
+  isAdministraConfigured,
+} from "./server/administraClient";
 
 dotenv.config();
 
@@ -412,36 +417,28 @@ function stripClientIdentityFields(raw: Record<string, any>): Record<string, any
   return cleaned;
 }
 
-function getServiceConfig(prefix: "CENTRAL" | "NOTIFICA" | "CLASSIFICA" | "FISCALIZA"): RemoteServiceConfig | null {
+function getServiceConfig(prefix: "NOTIFICA" | "CLASSIFICA" | "FISCALIZA"): RemoteServiceConfig | null {
   const candidates: Array<[string | undefined, string | undefined]> =
-    prefix === "CENTRAL"
+    prefix === "NOTIFICA"
       ? [
-          [process.env.CENTRAL_REGISTRY_ENDPOINT, process.env.CENTRAL_REGISTRY_TOKEN],
-          [process.env.ADMINISTRA_SUPABASE_URL, process.env.ADMINISTRA_SUPABASE_SERVICE_ROLE_KEY],
-          [process.env.ADMINISTRA_SUPABASE_URL, process.env.ADMINISTRA_SUPABASE_ANON_KEY],
-          [process.env.ADMINISTRA_SERVICE_ENDPOINT, process.env.ADMINISTRA_SERVICE_TOKEN],
-          [process.env.ADMINISTRA_DB_URL, process.env.ADMINISTRA_DB_KEY],
+          [process.env.NOTIFICA_SERVICE_ENDPOINT, process.env.NOTIFICA_SERVICE_TOKEN],
+          [process.env.NOTIFICA_SUPABASE_URL, process.env.NOTIFICA_SUPABASE_SERVICE_ROLE_KEY],
+          [process.env.NOTIFICA_SUPABASE_URL, process.env.NOTIFICA_SUPABASE_ANON_KEY],
+          [process.env.NOTIFICA_DB_URL, process.env.NOTIFICA_DB_KEY],
         ]
-      : prefix === "NOTIFICA"
+      : prefix === "CLASSIFICA"
         ? [
-            [process.env.NOTIFICA_SERVICE_ENDPOINT, process.env.NOTIFICA_SERVICE_TOKEN],
-            [process.env.NOTIFICA_SUPABASE_URL, process.env.NOTIFICA_SUPABASE_SERVICE_ROLE_KEY],
-            [process.env.NOTIFICA_SUPABASE_URL, process.env.NOTIFICA_SUPABASE_ANON_KEY],
-            [process.env.NOTIFICA_DB_URL, process.env.NOTIFICA_DB_KEY],
+            [process.env.CLASSIFICA_SERVICE_ENDPOINT, process.env.CLASSIFICA_SERVICE_TOKEN],
+            [process.env.CLASSIFICA_SUPABASE_URL, process.env.CLASSIFICA_SUPABASE_SERVICE_ROLE_KEY],
+            [process.env.CLASSIFICA_SUPABASE_URL, process.env.CLASSIFICA_SUPABASE_ANON_KEY],
+            [process.env.CLASSIFICA_DB_URL, process.env.CLASSIFICA_DB_KEY],
           ]
-        : prefix === "CLASSIFICA"
-          ? [
-              [process.env.CLASSIFICA_SERVICE_ENDPOINT, process.env.CLASSIFICA_SERVICE_TOKEN],
-              [process.env.CLASSIFICA_SUPABASE_URL, process.env.CLASSIFICA_SUPABASE_SERVICE_ROLE_KEY],
-              [process.env.CLASSIFICA_SUPABASE_URL, process.env.CLASSIFICA_SUPABASE_ANON_KEY],
-              [process.env.CLASSIFICA_DB_URL, process.env.CLASSIFICA_DB_KEY],
-            ]
-          : [
-              [process.env.FISCALIZA_SERVICE_ENDPOINT, process.env.FISCALIZA_SERVICE_TOKEN],
-              [process.env.FISCALIZA_SUPABASE_URL, process.env.FISCALIZA_SUPABASE_SERVICE_ROLE_KEY],
-              [process.env.FISCALIZA_SUPABASE_URL, process.env.FISCALIZA_SUPABASE_ANON_KEY],
-              [process.env.FISCALIZA_DB_URL, process.env.FISCALIZA_DB_KEY],
-            ];
+        : [
+            [process.env.FISCALIZA_SERVICE_ENDPOINT, process.env.FISCALIZA_SERVICE_TOKEN],
+            [process.env.FISCALIZA_SUPABASE_URL, process.env.FISCALIZA_SUPABASE_SERVICE_ROLE_KEY],
+            [process.env.FISCALIZA_SUPABASE_URL, process.env.FISCALIZA_SUPABASE_ANON_KEY],
+            [process.env.FISCALIZA_DB_URL, process.env.FISCALIZA_DB_KEY],
+          ];
 
   for (const [rawEndpoint, rawToken] of candidates) {
     const endpoint = rawEndpoint?.trim();
@@ -679,22 +676,45 @@ function mapRemoteRT(row: Record<string, any>, fallbackSystem: "ADMINISTRA" | "C
   const especialidades = Array.isArray(row.especialidades)
     ? row.especialidades.filter(Boolean).join(", ")
     : optionalText(row.especialidades);
+  const rawArts = Array.isArray(row.artsVinculadas)
+    ? row.artsVinculadas
+    : Array.isArray(row.arts_vinculadas)
+      ? row.arts_vinculadas
+      : [];
+  const artsVinculadas: Array<{
+    id?: string;
+    art: string;
+    barragemId?: string;
+    barragemNome?: string;
+    empreendedorId?: string;
+    empreendedorNome?: string;
+    processo?: string;
+    situacao?: string;
+    createdAt?: string;
+  }> = [];
+  for (const item of rawArts) {
+    if (!item || typeof item !== "object") continue;
+    const artCode = optionalText((item as Record<string, any>).art ?? (item as Record<string, any>).art_rrt);
+    if (!artCode) continue;
+    const rec = item as Record<string, any>;
+    artsVinculadas.push({
+      id: optionalText(rec.id),
+      art: artCode,
+      barragemId: optionalText(rec.barragemId ?? rec.barragem_id),
+      barragemNome: optionalText(rec.barragemNome ?? rec.barragem_nome ?? rec.observacoes),
+      empreendedorId: optionalText(rec.empreendedorId ?? rec.empreendedor_id),
+      empreendedorNome: optionalText(rec.empreendedorNome ?? rec.empreendedor_nome),
+      processo: optionalText(rec.processo),
+      situacao: optionalText(rec.situacao),
+      createdAt: optionalText(rec.createdAt ?? rec.created_at),
+    });
+  }
   return {
     id: String(row.id ?? row.rt_id ?? `${sourceSystem.toLowerCase()}_rt_${normalizePlainText(nome || reg || artInfo).replace(/\s+/g, "_") || Math.random().toString(36).slice(2, 8)}`),
     nome,
     registroProfissional: reg,
-    art: artInfo,
-    artsVinculadas: [] as Array<{
-      id?: string;
-      art: string;
-      barragemId?: string;
-      barragemNome?: string;
-      empreendedorId?: string;
-      empreendedorNome?: string;
-      processo?: string;
-      situacao?: string;
-      createdAt?: string;
-    }>,
+    art: artInfo ?? artsVinculadas[0]?.art,
+    artsVinculadas,
     formacaoProfissional: optionalText(row.formacao_profissional ?? row.formacaoProfissional ?? row.formacao_profissional_rt) ?? especialidades,
     cpf: optionalText(row.cpf ?? row.cpf_rt),
     telefone: optionalText(row.telefone ?? row.telefone_rt),
@@ -755,7 +775,7 @@ function attachArtsToRts(
 type EcosystemSystemName = "ADMINISTRA" | "CLASSIFICA" | "NOTIFICA" | "FISCALIZA";
 
 const SYSTEM_TABLE_CANDIDATES: Record<
-  EcosystemSystemName,
+  Exclude<EcosystemSystemName, "ADMINISTRA">,
   {
     empreendedores: string[];
     barragens: string[];
@@ -763,16 +783,6 @@ const SYSTEM_TABLE_CANDIDATES: Record<
     products: Array<{ table: string; defaultDocType: string }>;
   }
 > = {
-  ADMINISTRA: {
-    empreendedores: ["empreendedores"],
-    barragens: ["vw_barragens_integradas", "barragens"],
-    rts: ["rts", "responsaveis_tecnicos", "responsaveis_tecnicos_barragens"],
-    products: [
-      { table: "documentos_catalogo", defaultDocType: "Documento no Catálogo CSB" },
-      { table: "fiscaliza_notificacoes_importadas", defaultDocType: "Notificação (Fiscaliza)" },
-      { table: "historico_transferencias_titularidade", defaultDocType: "Transferência de Titularidade" },
-    ],
-  },
   CLASSIFICA: {
     empreendedores: ["empreendedores"],
     barragens: ["vw_barragens_integradas", "barragens", "barragens_classificacao"],
@@ -814,9 +824,13 @@ function extractDerivedEntitiesFromProductRow(
   systemId: EcosystemSystemName,
   defaultDocType: string
 ) {
-  const effectiveSystemId = normalizeSystemId(row.origem_sistema ?? row.source_system, systemId);
+  const effectiveSystemId = normalizeSystemId(
+    row.systemId ?? row.origem_sistema ?? row.source_system ?? row.sourceSystem,
+    systemId
+  );
   const empName = String(
     row.empreendedor_nome ??
+      row.empreendedorNome ??
       row.empreendedor ??
       row.identificacao_empreendedor ??
       row.interessado ??
@@ -828,6 +842,7 @@ function extractDerivedEntitiesFromProductRow(
   const rawCpfCnpj = String(
     row.cpf_cnpj ??
       row.empreendedor_cpf_cnpj ??
+      row.empreendedorCpfCnpj ??
       row.documento_identificacao ??
       row.documento_novo ??
       row.documento ??
@@ -842,7 +857,7 @@ function extractDerivedEntitiesFromProductRow(
       ? mapRemoteEmpreendedor(
           {
             ...row,
-            id: row.empreendedor_id || `${effectiveSystemId.toLowerCase()}_emp_${normDoc || normalizePlainText(empName).replace(/\s+/g, "_")}`,
+            id: row.empreendedor_id ?? row.empreendedorId ?? `${effectiveSystemId.toLowerCase()}_emp_${normDoc || normalizePlainText(empName).replace(/\s+/g, "_")}`,
             nome: empName || `Empreendedor (${formatCpfCnpj(normDoc)})`,
             cpf_cnpj: rawCpfCnpj,
             source_system: effectiveSystemId,
@@ -854,20 +869,21 @@ function extractDerivedEntitiesFromProductRow(
   const barName = String(
     row.nome_barragem ??
       row.barragem_nome ??
+      row.barragemNome ??
       row.barragem ??
       row.empreendimento ??
       row.nome_fantasia ??
       row.localizacao_empreendimento ??
       ""
   ).trim();
-  const snisb = String(row.codigo_snisb ?? row.snisb ?? "").trim();
+  const snisb = String(row.codigo_snisb ?? row.codigoSnisb ?? row.snisb ?? "").trim();
 
   const barragem =
     barName || snisb
       ? mapRemoteBarragem(
           {
             ...row,
-            id: row.barragem_id || `${effectiveSystemId.toLowerCase()}_bar_${normalizePlainText(snisb || barName).replace(/\s+/g, "_")}`,
+            id: row.barragem_id ?? row.barragemId ?? `${effectiveSystemId.toLowerCase()}_bar_${normalizePlainText(snisb || barName).replace(/\s+/g, "_")}`,
             nome_barragem: barName || `Barragem SNISB ${snisb}`,
             empreendedor_nome: empName || undefined,
             empreendedor_cpf_cnpj: rawCpfCnpj || undefined,
@@ -921,8 +937,9 @@ function extractDerivedEntitiesFromProductRow(
   const product = {
     id: String(row.id ?? `${effectiveSystemId}_${row.processo || row.num_processo || Math.random().toString(36).slice(2, 8)}`),
     systemId: effectiveSystemId,
-    tipoDocumento: String(row.tipo_nome ?? row.tipo_documento ?? row.titulo ?? row.tipo ?? defaultDocType),
+    tipoDocumento: String(row.tipoDocumento ?? row.tipo_nome ?? row.tipo_documento ?? row.titulo ?? row.tipo ?? defaultDocType),
     numeroDocumento:
+      row.numeroDocumento ??
       row.numero ??
       row.numero_documento ??
       row.oficio_gerado ??
@@ -934,16 +951,25 @@ function extractDerivedEntitiesFromProductRow(
       undefined,
     processo: row.processo ?? row.num_processo ?? row.protocolo ?? undefined,
     status: row.status ?? row.situacao ?? row.status_origem ?? row.situacao_cumprimento ?? undefined,
-    dataEmissao: row.data_emissao ?? row.data_parecer ?? row.data_notificacao ?? row.data ?? row.data_protocolo ?? row.created_at ?? row.criado_em ?? undefined,
-    empreendedorId: row.empreendedor_id ?? empreendedor?.id,
+    dataEmissao:
+      row.dataEmissao ??
+      row.data_emissao ??
+      row.data_parecer ??
+      row.data_notificacao ??
+      row.data ??
+      row.data_protocolo ??
+      row.created_at ??
+      row.criado_em ??
+      undefined,
+    empreendedorId: row.empreendedorId ?? row.empreendedor_id ?? empreendedor?.id,
     empreendedorNome: empName || undefined,
     empreendedorCpfCnpj: rawCpfCnpj || undefined,
-    barragemId: row.barragem_id ?? barragem?.id,
+    barragemId: row.barragemId ?? row.barragem_id ?? barragem?.id,
     barragemNome: barName || undefined,
     codigoSnisb: snisb || undefined,
     municipio: row.municipio ?? row.municipio_empreendimento ?? undefined,
     analista: row.analista ?? analistasRaw ?? row.analistas ?? undefined,
-    readonly: effectiveSystemId !== "NOTIFICA",
+    readonly: typeof row.readonly === "boolean" ? row.readonly : effectiveSystemId !== "NOTIFICA",
   };
 
   return { empreendedor, barragem, rts, product };
@@ -1194,7 +1220,7 @@ app.use("/api", requireAuth);
 app.get("/api/ecosystem/status", (_req, res) => {
   res.json({
     systems: {
-      ADMINISTRA: Boolean(getServiceConfig("CENTRAL")),
+      ADMINISTRA: isAdministraConfigured(),
       CLASSIFICA: Boolean(getServiceConfig("CLASSIFICA")),
       NOTIFICA: Boolean(getServiceConfig("NOTIFICA")),
       FISCALIZA: Boolean(getServiceConfig("FISCALIZA")),
@@ -1230,7 +1256,7 @@ app.get("/api/ecosystem/integrated-data", async (req, res) => {
   > = {
     ADMINISTRA: {
       systemId: "ADMINISTRA",
-      remoteConfigured: Boolean(getServiceConfig("CENTRAL")),
+      remoteConfigured: isAdministraConfigured(),
       reachable: false,
       authDenied: false,
       empreendedoresCount: 0,
@@ -1272,7 +1298,33 @@ app.get("/api/ecosystem/integrated-data", async (req, res) => {
 
   await Promise.all(
     targetSystems.map(async (sysId) => {
-      const cfg = getServiceConfig(sysId === "ADMINISTRA" ? "CENTRAL" : sysId);
+      if (sysId === "ADMINISTRA") {
+        if (!isAdministraConfigured()) return;
+
+        const [healthRes, barragensRes] = await Promise.all([
+          checkAdministraHealth(),
+          fetchAdministraBarragens(),
+        ]);
+
+        const sysBars = barragensRes.barragensRows.map((row) => mapRemoteBarragem(row, "ADMINISTRA"));
+        const uniqueBars = dedupeBarragens(sysBars);
+
+        diagnostics.ADMINISTRA = {
+          systemId: "ADMINISTRA",
+          remoteConfigured: true,
+          reachable: Boolean(barragensRes.ok || healthRes.ok),
+          authDenied: Boolean(barragensRes.authDenied || (!barragensRes.ok && healthRes.authDenied)),
+          empreendedoresCount: 0,
+          barragensCount: uniqueBars.length,
+          rtsCount: 0,
+          productsCount: 0,
+        };
+
+        allBars.push(...uniqueBars);
+        return;
+      }
+
+      const cfg = getServiceConfig(sysId);
       if (!cfg) return;
 
       const tables = SYSTEM_TABLE_CANDIDATES[sysId];
@@ -1283,37 +1335,18 @@ app.get("/api/ecosystem/integrated-data", async (req, res) => {
       let anyOk = false;
       let anyAuthDenied = false;
 
-      const empRequests = (async () => {
-        const carsByEmpId = new Map<string, string>();
-        if (sysId === "ADMINISTRA") {
-          const viewRes = await remoteRestRequest<Record<string, any>[]>(cfg, "vw_empreendedores_barragens_rts", {
-            query: "select=empreendedor_id,cars_mt&limit=2000",
-          });
-          if (viewRes.ok && Array.isArray(viewRes.data)) {
-            viewRes.data.forEach((v) => {
-              const id = String(v.empreendedor_id || "");
-              const cars = Array.isArray(v.cars_mt) ? v.cars_mt.filter(Boolean).join(", ") : String(v.cars_mt || "");
-              if (id && cars) carsByEmpId.set(id, cars);
+      const empRequests = Promise.all(
+        tables.empreendedores.map(async (table) => {
+          const r = await remoteRestRequest<Record<string, any>[]>(cfg, table, { query: "select=*&limit=2000" });
+          if (r.status === 401 || r.status === 403) anyAuthDenied = true;
+          if (r.ok && Array.isArray(r.data)) {
+            anyOk = true;
+            r.data.forEach((row) => {
+              sysEmps.push(mapRemoteEmpreendedor(row, sysId));
             });
           }
-        }
-        await Promise.all(
-          tables.empreendedores.map(async (table) => {
-            const r = await remoteRestRequest<Record<string, any>[]>(cfg, table, { query: "select=*&limit=2000" });
-            if (r.status === 401 || r.status === 403) anyAuthDenied = true;
-            if (r.ok && Array.isArray(r.data)) {
-              anyOk = true;
-              r.data.forEach((row) => {
-                const mapped = mapRemoteEmpreendedor(row, sysId);
-                if (!mapped.carMt && carsByEmpId.has(mapped.id)) {
-                  mapped.carMt = carsByEmpId.get(mapped.id);
-                }
-                sysEmps.push(mapped);
-              });
-            }
-          })
-        );
-      })();
+        })
+      );
 
       const barRequests = (async () => {
         for (const table of tables.barragens) {
@@ -1322,7 +1355,6 @@ app.get("/api/ecosystem/integrated-data", async (req, res) => {
           if (r.ok && Array.isArray(r.data)) {
             anyOk = true;
             r.data.forEach((row) => sysBars.push(mapRemoteBarragem(row, sysId)));
-            if (r.data.length > 0 && sysId === "ADMINISTRA") break;
           }
         }
       })();
@@ -1334,7 +1366,6 @@ app.get("/api/ecosystem/integrated-data", async (req, res) => {
           if (r.ok && Array.isArray(r.data)) {
             anyOk = true;
             r.data.forEach((row) => sysRts.push(mapRemoteRT(row, sysId)));
-            if (r.data.length > 0 && sysId === "ADMINISTRA") break;
           }
         }
       })();
@@ -1347,11 +1378,9 @@ app.get("/api/ecosystem/integrated-data", async (req, res) => {
           r.data.forEach((row) => {
             const derived = extractDerivedEntitiesFromProductRow(row, sysId, defaultDocType);
             sysProducts.push(derived.product);
-            if (sysId !== "ADMINISTRA") {
-              if (derived.empreendedor) sysEmps.push(derived.empreendedor);
-              if (derived.barragem) sysBars.push(derived.barragem);
-              if (derived.rts.length > 0) sysRts.push(...derived.rts);
-            }
+            if (derived.empreendedor) sysEmps.push(derived.empreendedor);
+            if (derived.barragem) sysBars.push(derived.barragem);
+            if (derived.rts.length > 0) sysRts.push(...derived.rts);
           });
         }
       });
@@ -1492,10 +1521,10 @@ app.get("/api/gis/car-by-coords", async (req, res) => {
   }
 });
 
-// Central Registry Proxy (Administra Barragens)
+// Central Registry Proxy (Administra Barragens API 2.0 S2S: apenas /api/v2/barragens confirmado)
 app.get("/api/registry/bootstrap", async (req, res) => {
-  const cfg = getServiceConfig("CENTRAL");
-  if (!cfg) {
+  const bundle = await fetchAdministraBarragens();
+  if (!bundle.configured) {
     return res.json({
       remoteEnabled: false,
       empreendedores: [],
@@ -1504,72 +1533,24 @@ app.get("/api/registry/bootstrap", async (req, res) => {
     });
   }
 
-  const [empsRes, empsViewRes, barsViewRes, barsRes, rtsPrimaryRes, rtsFallbackRes, rtArtsRes] = await Promise.all([
-    remoteRestRequest<Record<string, any>[]>(cfg, "empreendedores", { query: "select=*&limit=2000" }),
-    remoteRestRequest<Record<string, any>[]>(cfg, "vw_empreendedores_barragens_rts", { query: "select=empreendedor_id,cars_mt&limit=2000" }),
-    remoteRestRequest<Record<string, any>[]>(cfg, "vw_barragens_integradas", { query: "select=*&limit=2000" }),
-    remoteRestRequest<Record<string, any>[]>(cfg, "barragens", { query: "select=*&limit=2000" }),
-    remoteRestRequest<Record<string, any>[]>(cfg, "rts", { query: "select=*&limit=1000" }),
-    remoteRestRequest<Record<string, any>[]>(cfg, "responsaveis_tecnicos", { query: "select=*&limit=1000" }),
-    remoteRestRequest<Record<string, any>[]>(cfg, "responsaveis_tecnicos_barragens", { query: "select=id,rt_id,barragem_id,nome,art,art_rrt,conselho,processo,situacao,observacoes,created_at&limit=2000" }),
-  ]);
-
-  const carsByEmpId = new Map<string, string>();
-  if (Array.isArray(empsViewRes.data)) {
-    empsViewRes.data.forEach((v) => {
-      const id = String(v.empreendedor_id || "");
-      const cars = Array.isArray(v.cars_mt) ? v.cars_mt.filter(Boolean).join(", ") : String(v.cars_mt || "");
-      if (id && cars) carsByEmpId.set(id, cars);
-    });
-  }
-
-  const empreendedores = Array.isArray(empsRes.data)
-    ? empsRes.data.map((row) => {
-        const mapped = mapRemoteEmpreendedor(row, "ADMINISTRA");
-        if (!mapped.carMt && carsByEmpId.has(mapped.id)) {
-          mapped.carMt = carsByEmpId.get(mapped.id);
-        }
-        return mapped;
-      })
-    : [];
-
-  const barSource =
-    barsViewRes.ok && Array.isArray(barsViewRes.data) && barsViewRes.data.length > 0
-      ? barsViewRes.data
-      : Array.isArray(barsRes.data)
-        ? barsRes.data
-        : [];
-  const barragens = barSource.map((row) => mapRemoteBarragem(row, "ADMINISTRA"));
-
-  const rtSource =
-    rtsPrimaryRes.ok && Array.isArray(rtsPrimaryRes.data) && rtsPrimaryRes.data.length > 0
-      ? rtsPrimaryRes.data
-      : Array.isArray(rtsFallbackRes.data)
-        ? rtsFallbackRes.data
-        : [];
-  const responsaveisTecnicos = attachArtsToRts(
-    rtSource.map((row) => mapRemoteRT(row, "ADMINISTRA")),
-    Array.isArray(rtArtsRes.data) ? rtArtsRes.data : [],
-    barragens
-  );
-
+  const barragens = bundle.barragensRows.map((row) => mapRemoteBarragem(row, "ADMINISTRA"));
   const includeFullDoc = canViewFullDocument(req);
 
   return res.json({
-    remoteEnabled: Boolean(empsRes.ok || barsViewRes.ok || barsRes.ok || rtsPrimaryRes.ok || rtsFallbackRes.ok),
-    empreendedores: includeFullDoc ? empreendedores : empreendedores.map(maskEmpreendedorItem),
+    remoteEnabled: bundle.ok,
+    empreendedores: [],
     barragens: includeFullDoc ? barragens : barragens.map(maskBarragemItem),
-    responsaveisTecnicos: includeFullDoc ? responsaveisTecnicos : responsaveisTecnicos.map(maskRtItem),
+    responsaveisTecnicos: [],
   });
 });
 
 app.get("/api/registry/search", async (req, res) => {
   const q = String(req.query.q || "").trim();
   const empreendedorId = String(req.query.empreendedorId || "").trim();
-  const cfg = getServiceConfig("CENTRAL");
-  if (!cfg || (!q && !empreendedorId)) {
+  const configured = isAdministraConfigured();
+  if (!configured || (!q && !empreendedorId)) {
     return res.json({
-      remoteEnabled: Boolean(cfg),
+      remoteEnabled: configured,
       empreendedores: [],
       barragens: [],
       responsaveisTecnicos: [],
@@ -1582,55 +1563,10 @@ app.get("/api/registry/search", async (req, res) => {
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "")
     .toLowerCase();
-  const normCar = clean.toUpperCase().replace(/[^A-Z0-9]/g, "");
 
-  const [empsRes, empsViewRes, barsViewRes, rtsRes, rtArtsRes] = await Promise.all([
-    remoteRestRequest<Record<string, any>[]>(cfg, "empreendedores", { query: "select=*&limit=2000" }),
-    remoteRestRequest<Record<string, any>[]>(cfg, "vw_empreendedores_barragens_rts", { query: "select=empreendedor_id,cars_mt&limit=2000" }),
-    remoteRestRequest<Record<string, any>[]>(cfg, "vw_barragens_integradas", { query: "select=*&limit=2000" }),
-    remoteRestRequest<Record<string, any>[]>(cfg, "rts", { query: "select=*&limit=1000" }),
-    remoteRestRequest<Record<string, any>[]>(cfg, "responsaveis_tecnicos_barragens", { query: "select=id,rt_id,barragem_id,nome,art,art_rrt,conselho,processo,situacao,observacoes,created_at&limit=2000" }),
-  ]);
+  const bundle = await fetchAdministraBarragens();
 
-  const carsByEmpId = new Map<string, string>();
-  if (Array.isArray(empsViewRes.data)) {
-    empsViewRes.data.forEach((v) => {
-      const id = String(v.empreendedor_id || "");
-      const cars = Array.isArray(v.cars_mt) ? v.cars_mt.filter(Boolean).join(", ") : String(v.cars_mt || "");
-      if (id && cars) carsByEmpId.set(id, cars);
-    });
-  }
-
-  const empreendedores = Array.isArray(empsRes.data)
-    ? empsRes.data
-        .map((row) => {
-          const mapped = mapRemoteEmpreendedor(row, "ADMINISTRA");
-          if (!mapped.carMt && carsByEmpId.has(mapped.id)) mapped.carMt = carsByEmpId.get(mapped.id);
-          return mapped;
-        })
-        .filter((e) => {
-          if (!clean) return false;
-          const nameNorm = e.nome.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
-          const munNorm = (e.municipio || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
-          const carClean = (e.carMt || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
-          return (
-            nameNorm.includes(normText) ||
-            munNorm.includes(normText) ||
-            e.cpfCnpj.toLowerCase().includes(clean.toLowerCase()) ||
-            (digits.length >= 3 && e.cpfCnpjNormalizado.includes(digits)) ||
-            (normCar.length >= 3 && carClean.includes(normCar))
-          );
-        })
-        .slice(0, 50)
-    : [];
-
-  let barRows = Array.isArray(barsViewRes.data) ? barsViewRes.data : [];
-  if (barRows.length === 0) {
-    const fallbackBars = await remoteRestRequest<Record<string, any>[]>(cfg, "barragens", { query: "select=*&limit=2000" });
-    barRows = Array.isArray(fallbackBars.data) ? fallbackBars.data : [];
-  }
-
-  const barragens = barRows
+  const barragens = bundle.barragensRows
     .map((row) => mapRemoteBarragem(row, "ADMINISTRA"))
     .filter((b) => {
       if (empreendedorId && b.empreendedorId !== empreendedorId) return false;
@@ -1649,39 +1585,13 @@ app.get("/api/registry/search", async (req, res) => {
     })
     .slice(0, 100);
 
-  let rtRows = Array.isArray(rtsRes.data) ? rtsRes.data : [];
-  if (rtRows.length === 0) {
-    const fallbackRts = await remoteRestRequest<Record<string, any>[]>(cfg, "responsaveis_tecnicos", { query: "select=*&limit=1000" });
-    rtRows = Array.isArray(fallbackRts.data) ? fallbackRts.data : [];
-  }
-
-  const responsaveisTecnicos = clean
-    ? attachArtsToRts(
-        rtRows.map((row) => mapRemoteRT(row, "ADMINISTRA")),
-        Array.isArray(rtArtsRes.data) ? rtArtsRes.data : [],
-        barragens
-      )
-        .filter((rt) => {
-          const rtName = rt.nome.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
-          const reg = (rt.registroProfissional || "").toLowerCase();
-          const art = (rt.art || "").toLowerCase();
-          return (
-            rtName.includes(normText) ||
-            reg.includes(normText) ||
-            art.includes(normText) ||
-            (digits.length >= 3 && normalizeDigits(rt.cpf).includes(digits))
-          );
-        })
-        .slice(0, 50)
-    : [];
-
   const includeFullDoc = canViewFullDocument(req);
 
   return res.json({
-    remoteEnabled: true,
-    empreendedores: includeFullDoc ? empreendedores : empreendedores.map(maskEmpreendedorItem),
+    remoteEnabled: Boolean(bundle.configured && bundle.ok),
+    empreendedores: [],
     barragens: includeFullDoc ? barragens : barragens.map(maskBarragemItem),
-    responsaveisTecnicos: includeFullDoc ? responsaveisTecnicos : responsaveisTecnicos.map(maskRtItem),
+    responsaveisTecnicos: [],
   });
 });
 

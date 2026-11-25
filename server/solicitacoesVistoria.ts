@@ -287,9 +287,25 @@ function getAdministraSolicitacoesConfig(): { baseUrl: string; token: string } |
   if (
     !rawUrl ||
     !rawToken ||
-    !/^https?:\/\//i.test(rawUrl) ||
-    rawUrl.includes("placeholder") ||
-    rawToken.includes("placeholder")
+    /placeholder/i.test(rawUrl) ||
+    /placeholder/i.test(rawToken) ||
+    /[\r\n]/.test(rawUrl) ||
+    /[\r\n]/.test(rawToken)
+  ) {
+    return null;
+  }
+
+  let parsedUrl: URL;
+  try {
+    parsedUrl = new URL(rawUrl);
+  } catch {
+    return null;
+  }
+
+  if (
+    (parsedUrl.protocol !== "https:" && parsedUrl.protocol !== "http:") ||
+    parsedUrl.username ||
+    parsedUrl.password
   ) {
     return null;
   }
@@ -528,6 +544,12 @@ function stripIdentityFields(raw: Record<string, unknown>): Record<string, unkno
   return cleaned;
 }
 
+function redactSensitiveHeaderPatterns(text: string): string {
+  return text
+    .replace(/Bearer\s+[A-Za-z0-9\-._~+/]+=*/gi, "Bearer [REDACTED]")
+    .replace(/apikey\s*[:=]\s*[^\s,;]+/gi, "apikey=[REDACTED]");
+}
+
 async function callAdministraApi(
   cfg: { baseUrl: string; token: string },
   pathSuffix: string,
@@ -538,8 +560,29 @@ async function callAdministraApi(
   data: unknown;
   errorMessage?: string;
 }> {
+  const rawTimeout = Number(process.env.ADMINISTRA_API_TIMEOUT_MS);
+  const timeoutMs =
+    Number.isFinite(rawTimeout) && rawTimeout > 0
+      ? Math.min(30_000, Math.max(10, Math.trunc(rawTimeout)))
+      : 10_000;
+  const controller = new AbortController();
+  let timedOut = false;
+  const timer = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, timeoutMs);
+
   try {
+    const baseUrl = new URL(cfg.baseUrl);
     const targetUrl = new URL(`${cfg.baseUrl}${pathSuffix}`);
+    if (targetUrl.origin !== baseUrl.origin) {
+      return {
+        ok: false,
+        status: 502,
+        data: null,
+        errorMessage: "Endereço inválido para o serviço central de solicitações de vistoria.",
+      };
+    }
     if (options.query) {
       for (const [k, v] of Object.entries(options.query)) {
         targetUrl.searchParams.set(k, v);
@@ -558,7 +601,7 @@ async function callAdministraApi(
       method: options.method || "GET",
       headers,
       body: options.body ? JSON.stringify(options.body) : undefined,
-      signal: AbortSignal.timeout(10000),
+      signal: controller.signal,
     });
 
     const text = await res.text();
@@ -580,18 +623,29 @@ async function callAdministraApi(
         ok: false,
         status: res.status,
         data: parsed,
-        errorMessage: sanitizePublicText(rawErr) || undefined,
+        errorMessage: sanitizePublicText(redactSensitiveHeaderPatterns(rawErr)) || undefined,
       };
     }
 
     return { ok: true, status: res.status, data: parsed };
-  } catch {
+  } catch (err) {
+    const errName = err && typeof err === "object" ? String((err as { name?: unknown }).name || "") : "";
+    if (timedOut || errName === "TimeoutError" || errName === "AbortError") {
+      return {
+        ok: false,
+        status: 504,
+        data: null,
+        errorMessage: "Tempo limite excedido ao consultar o serviço central de solicitações de vistoria.",
+      };
+    }
     return {
       ok: false,
       status: 503,
       data: null,
       errorMessage: "Serviço central de solicitações de vistoria indisponível no momento.",
     };
+  } finally {
+    clearTimeout(timer);
   }
 }
 
@@ -645,6 +699,11 @@ function handleUpstreamFailure(
   if (upstream.status >= 400 && upstream.status < 500) {
     return res.status(upstream.status).json({
       error: upstream.errorMessage || fallbackMsg,
+    });
+  }
+  if (upstream.status === 504) {
+    return res.status(504).json({
+      error: upstream.errorMessage || "Tempo limite excedido ao consultar o serviço central de solicitações de vistoria.",
     });
   }
   return res.status(upstream.status === 503 ? 503 : 502).json({

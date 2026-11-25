@@ -53,10 +53,12 @@ interface UpstreamCall {
 const upstreamCalls: UpstreamCall[] = [];
 let upstreamStore: Array<Record<string, any>> = [];
 let forceUpstreamConflict = false;
+let forceUpstreamTimeout = false;
 
 function resetMockState() {
   upstreamCalls.length = 0;
   forceUpstreamConflict = false;
+  forceUpstreamTimeout = false;
   upstreamStore = [
     {
       id: "sol-notifica-1",
@@ -173,6 +175,22 @@ function installMockFetch(baseServerUrl: string) {
 
       if (headers.get("Authorization") !== "Bearer test-solicitacoes-service-token") {
         return new Response(JSON.stringify({ error: "Unauthorized service token" }), { status: 401 });
+      }
+
+      if (forceUpstreamTimeout) {
+        return new Promise<Response>((_resolve, reject) => {
+          const signal = init?.signal;
+          const abortHandler = () => {
+            const err = new Error("Aborted");
+            err.name = "AbortError";
+            reject(err);
+          };
+          if (signal?.aborted) {
+            abortHandler();
+            return;
+          }
+          signal?.addEventListener("abort", abortHandler);
+        });
       }
 
       if (forceUpstreamConflict && method !== "GET") {
@@ -623,5 +641,23 @@ test("Solicitações de Vistoria: falha controlada (503 sem configuração e 409
     const conflictData = (await conflictRes.json()) as { error?: string };
     assert.match(conflictData.error || "", /duplicada|conflito/i);
     assert.equal(upstreamStore.length, initialCount);
+
+    // Simula timeout no serviço central -> retorna 504 sem vazar credenciais
+    forceUpstreamConflict = false;
+    forceUpstreamTimeout = true;
+    process.env.ADMINISTRA_API_TIMEOUT_MS = "25";
+    try {
+      const timeoutRes = await originalFetch(`${baseUrl}/api/solicitacoes-vistoria`, {
+        headers: { Authorization: "Bearer token-admin" },
+      });
+      assert.equal(timeoutRes.status, 504);
+      const timeoutText = await timeoutRes.text();
+      assert.equal(timeoutText.includes("test-solicitacoes-service-token"), false);
+      const timeoutData = JSON.parse(timeoutText) as { error?: string };
+      assert.match(timeoutData.error || "", /tempo limite/i);
+    } finally {
+      forceUpstreamTimeout = false;
+      delete process.env.ADMINISTRA_API_TIMEOUT_MS;
+    }
   });
 });

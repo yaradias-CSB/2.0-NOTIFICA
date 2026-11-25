@@ -7,8 +7,8 @@ process.env.NODE_ENV = "test";
 process.env.NOTIFICA_SUPABASE_URL = "https://notifica-test.supabase.co";
 process.env.NOTIFICA_SUPABASE_ANON_KEY = "test-anon-key-notifica-123456";
 process.env.NOTIFICA_SUPABASE_SERVICE_ROLE_KEY = "test-service-role-key-notifica-123456";
-process.env.ADMINISTRA_SUPABASE_URL = "https://administra-test.supabase.co";
-process.env.ADMINISTRA_SUPABASE_SERVICE_ROLE_KEY = "test-service-role-administra-123456";
+process.env.ADMINISTRA_API_URL = "https://administra-api.internal.test";
+process.env.ADMINISTRA_API_TOKEN = "test-s2s-token-administra-123456";
 
 const ADMIN_ID = "11111111-1111-4111-8111-111111111111";
 const ANALYST_ID = "22222222-2222-4222-8222-222222222222";
@@ -82,58 +82,44 @@ function installMockFetch(baseServerUrl: string) {
       }
     }
 
-    if (url.origin === "https://administra-test.supabase.co") {
+    if (url.hostname.includes("supabase.co") && url.origin !== "https://notifica-test.supabase.co") {
+      registraReadExternalCalls += 1;
+      return new Response(JSON.stringify({ error: "Legacy Supabase must never be called" }), { status: 500 });
+    }
+
+    if (url.origin === "https://administra-api.internal.test") {
       if (method !== "GET") {
         registraWriteExternalCalls += 1;
         return new Response(JSON.stringify({ error: "External write should not be called" }), { status: 500 });
       }
 
+      if (headers.get("Authorization") !== "Bearer test-s2s-token-administra-123456" || headers.has("apikey")) {
+        return new Response(JSON.stringify({ error: "Unauthorized S2S request" }), { status: 401 });
+      }
+
       registraReadExternalCalls += 1;
-      if (url.pathname === "/rest/v1/empreendedores") {
+      if (url.pathname === "/api/v2/health") {
+        return new Response(JSON.stringify({ ok: true }), { status: 200 });
+      }
+      if (url.pathname === "/api/v2/barragens") {
         return new Response(
-          JSON.stringify([
-            {
-              id: "emp-adm-1",
-              nome: "Empreendedor Oficial Administra",
-              cpf_cnpj: "12345678901",
-              cpf_cnpj_normalizado: "12345678901",
-              municipio: "Cuiabá",
-              uf: "MT",
-              source_system: "ADMINISTRA",
-            },
-          ]),
-          { status: 200 }
+          JSON.stringify({
+            barragens: [
+              {
+                id: "bar-adm-1",
+                empreendedor_id: "emp-adm-1",
+                empreendedor_nome: "Empreendedor Oficial Administra",
+                nome_barragem: "Barragem Oficial",
+                municipio: "Cuiabá",
+                uf: "MT",
+                source_system: "ADMINISTRA",
+              },
+            ],
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } }
         );
       }
-      if (url.pathname === "/rest/v1/vw_barragens_integradas" || url.pathname === "/rest/v1/barragens") {
-        return new Response(
-          JSON.stringify([
-            {
-              id: "bar-adm-1",
-              empreendedor_id: "emp-adm-1",
-              nome_barragem: "Barragem Oficial",
-              municipio: "Cuiabá",
-              uf: "MT",
-              source_system: "ADMINISTRA",
-            },
-          ]),
-          { status: 200 }
-        );
-      }
-      if (url.pathname === "/rest/v1/rts" || url.pathname === "/rest/v1/responsaveis_tecnicos") {
-        return new Response(
-          JSON.stringify([
-            {
-              id: "rt-adm-1",
-              nome: "Engenheiro Responsável",
-              registro: "CREA-MT 12345",
-              source_system: "ADMINISTRA",
-            },
-          ]),
-          { status: 200 }
-        );
-      }
-      return new Response(JSON.stringify([]), { status: 200 });
+      return new Response(JSON.stringify({ error: "Unconfirmed route called" }), { status: 404 });
     }
 
     return new Response(JSON.stringify({ error: "Not mocked" }), { status: 404 });
@@ -246,7 +232,7 @@ test("Rotas de escrita e exclusão no Administra retornam 409 sem fazer requisi�
   assert.equal(registraReadExternalCalls, 0);
 });
 
-test("Rotas de leitura do Administra continuam protegidas (401) e funcionais para usuários autenticados", async () => {
+test("Rotas de leitura do Administra continuam protegidas (401) e usam somente /api/v2/barragens", async () => {
   const unauthBootstrap = await originalFetch(`${baseUrl}/api/registry/bootstrap`);
   assert.equal(unauthBootstrap.status, 401);
 
@@ -259,14 +245,15 @@ test("Rotas de leitura do Administra continuam protegidas (401) e funcionais par
   assert.equal(authBootstrap.status, 200);
   const bootBody = (await authBootstrap.json()) as {
     remoteEnabled?: boolean;
-    empreendedores: Array<{ id: string; nome: string; cpfCnpj?: string }>;
-    barragens: Array<{ id: string }>;
+    empreendedores: Array<{ id: string }>;
+    barragens: Array<{ id: string; nomeBarragem: string }>;
     responsaveisTecnicos: Array<{ id: string }>;
   };
   assert.equal(bootBody.remoteEnabled, true);
-  assert.equal(bootBody.empreendedores.length, 1);
+  assert.equal(bootBody.empreendedores.length, 0);
   assert.equal(bootBody.barragens.length, 1);
-  assert.equal(bootBody.responsaveisTecnicos.length, 1);
+  assert.equal(bootBody.barragens[0]?.id, "bar-adm-1");
+  assert.equal(bootBody.responsaveisTecnicos.length, 0);
 
   const authSearch = await originalFetch(`${baseUrl}/api/registry/search?q=Oficial`, {
     headers: { Authorization: "Bearer token-analyst" },
@@ -274,10 +261,14 @@ test("Rotas de leitura do Administra continuam protegidas (401) e funcionais par
   assert.equal(authSearch.status, 200);
   const searchBody = (await authSearch.json()) as {
     remoteEnabled?: boolean;
-    empreendedores: Array<{ id: string; nome: string }>;
+    empreendedores: Array<{ id: string }>;
+    barragens: Array<{ id: string; nomeBarragem: string }>;
+    responsaveisTecnicos: Array<{ id: string }>;
   };
   assert.equal(searchBody.remoteEnabled, true);
-  assert.equal(searchBody.empreendedores[0]?.id, "emp-adm-1");
+  assert.equal(searchBody.empreendedores.length, 0);
+  assert.equal(searchBody.barragens[0]?.id, "bar-adm-1");
+  assert.equal(searchBody.responsaveisTecnicos.length, 0);
   assert.ok(registraReadExternalCalls > 0);
   assert.equal(registraWriteExternalCalls, 0);
 });
