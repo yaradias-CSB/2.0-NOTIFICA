@@ -41,23 +41,62 @@ const ADMINISTRA_CACHE_KEYS = {
   RTS: 'administra_barragens_rts',
 } as const;
 
+function safeGetStorageItem(key: string): string | null {
+  if (typeof localStorage === 'undefined') return null;
+  try {
+    return localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
 function readAdministraCache() {
   const emps = safeJsonParse<EmpreendedorCanonico[]>(
-    localStorage.getItem(ADMINISTRA_CACHE_KEYS.EMPREENDEDORES),
+    safeGetStorageItem(ADMINISTRA_CACHE_KEYS.EMPREENDEDORES),
     []
   );
   const bars = safeJsonParse<BarragemCanonica[]>(
-    localStorage.getItem(ADMINISTRA_CACHE_KEYS.BARRAGENS),
+    safeGetStorageItem(ADMINISTRA_CACHE_KEYS.BARRAGENS),
     []
   );
   const rts = safeJsonParse<ResponsavelTecnicoCanonico[]>(
-    localStorage.getItem(ADMINISTRA_CACHE_KEYS.RTS),
+    safeGetStorageItem(ADMINISTRA_CACHE_KEYS.RTS),
     []
   );
   return {
     empsById: new Map((Array.isArray(emps) ? emps : []).map((e) => [e.id, e])),
     barsById: new Map((Array.isArray(bars) ? bars : []).map((b) => [b.id, b])),
     rtsById: new Map((Array.isArray(rts) ? rts : []).map((r) => [r.id, r])),
+  };
+}
+
+function serializeRetificationFields(clean: Record<string, any>): Record<string, any> {
+  const out: Record<string, any> = {};
+  if (clean.retificadoDeId) out.retificado_de_id = String(clean.retificadoDeId);
+  if (clean.retificacaoJustificativa) out.retificacao_justificativa = String(clean.retificacaoJustificativa);
+  if (clean.retificadoEm) out.retificado_em = String(clean.retificadoEm);
+  if (clean.retificadoPorId) out.retificado_por_id = String(clean.retificadoPorId);
+  if (clean.retificadoPorNome) out.retificado_por_nome = String(clean.retificadoPorNome);
+  if (clean.versaoRetificacao !== undefined && clean.versaoRetificacao !== null) {
+    out.versao_retificacao = Number(clean.versaoRetificacao);
+  }
+  return out;
+}
+
+function hydrateRetificationFields(row: Record<string, any>) {
+  return {
+    retificadoDeId: row.retificado_de_id ?? row.retificadoDeId ?? undefined,
+    retificacaoJustificativa:
+      row.retificacao_justificativa ?? row.retificacaoJustificativa ?? undefined,
+    retificadoEm: row.retificado_em ?? row.retificadoEm ?? undefined,
+    retificadoPorId: row.retificado_por_id ?? row.retificadoPorId ?? undefined,
+    retificadoPorNome: row.retificado_por_nome ?? row.retificadoPorNome ?? undefined,
+    versaoRetificacao:
+      row.versao_retificacao !== undefined && row.versao_retificacao !== null
+        ? Number(row.versao_retificacao)
+        : row.versaoRetificacao !== undefined && row.versaoRetificacao !== null
+          ? Number(row.versaoRetificacao)
+          : undefined,
   };
 }
 
@@ -189,6 +228,7 @@ export function serializeParecerFlat(data: ParecerData, id: string, now: string,
     topicos_extras_texto: serializeTopicosExtras(clean.topicosExtras),
     revisao_parecer_custom: clean.revisaoParecer || '',
     source_system: clean.sourceSystem || CURRENT_SYSTEM_ID,
+    ...serializeRetificationFields(clean),
     created_at: createdAt,
     updated_at: now,
   };
@@ -323,6 +363,7 @@ export function hydrateParecerRow(row: Record<string, any>): ParecerData {
     topicosExtras: parseTopicosExtras(row.topicos_extras_texto ?? row.topicosExtras),
     revisaoParecer: row.revisao_parecer_custom ?? row.revisaoParecer ?? '',
     sourceSystem: (row.source_system ?? row.sourceSystem ?? CURRENT_SYSTEM_ID) as any,
+    ...hydrateRetificationFields(row),
     created_at: row.created_at ?? undefined,
     updated_at: row.updated_at ?? undefined,
   };
@@ -373,6 +414,7 @@ export function serializeOficioFlat(data: OficioData, id: string, now: string, c
     pendencias_texto: serializePendencias(clean.pendencias),
     anotacoes_internas: clean.anotacoesInternas || '',
     source_system: clean.sourceSystem || CURRENT_SYSTEM_ID,
+    ...serializeRetificationFields(clean),
     created_at: createdAt,
     updated_at: now,
   };
@@ -454,6 +496,7 @@ export function hydrateOficioRow(row: Record<string, any>): OficioData {
     pendencias: parsePendencias(row.pendencias_texto ?? row.pendencias),
     anotacoesInternas: row.anotacoes_internas ?? row.anotacoesInternas ?? '',
     sourceSystem: (row.source_system ?? row.sourceSystem ?? CURRENT_SYSTEM_ID) as any,
+    ...hydrateRetificationFields(row),
     created_at: row.created_at ?? undefined,
     updated_at: row.updated_at ?? undefined,
   };
@@ -515,6 +558,7 @@ export function serializeNotificacaoFlat(
     // Keep DB light: store notification text ONLY if user manually customized it
     texto_notificacao_custom: clean.textoNotificacaoCustomizado ? clean.textoNotificacao || '' : '',
     source_system: clean.sourceSystem || CURRENT_SYSTEM_ID,
+    ...serializeRetificationFields(clean),
     created_at: createdAt,
     updated_at: now,
   };
@@ -611,6 +655,7 @@ export function hydrateNotificacaoRow(row: Record<string, any>): NotificacaoData
     textoNotificacaoCustomizado: isCustom,
     textoSigaDoc: '',
     sourceSystem: (row.source_system ?? row.sourceSystem ?? CURRENT_SYSTEM_ID) as any,
+    ...hydrateRetificationFields(row),
     created_at: row.created_at ?? undefined,
     updated_at: row.updated_at ?? undefined,
   };
@@ -628,6 +673,7 @@ export function hydrateNotificacaoRow(row: Record<string, any>): NotificacaoData
 // =========================================================================
 
 function readCollection<T>(primaryKey: string, legacyKey?: string): T[] {
+  if (typeof localStorage === 'undefined') return [];
   try {
     const raw = localStorage.getItem(primaryKey);
     const legacyRaw = legacyKey ? localStorage.getItem(legacyKey) : null;
@@ -647,6 +693,7 @@ function readCollection<T>(primaryKey: string, legacyKey?: string): T[] {
 }
 
 function writeCollection<T>(primaryKey: string, items: T[]): void {
+  if (typeof localStorage === 'undefined') return;
   try {
     const cleaned = items.map((item) => stripSensitiveFields(item));
     localStorage.setItem(primaryKey, JSON.stringify(cleaned));
@@ -765,12 +812,14 @@ export class LocalDocumentRepository implements DocumentRepository {
     const createdAt = existing?.created_at || cleanData.created_at || now;
 
     // Persist lean flat row remotely first, then locally using server-authoritative row
+    const retifFields = serializeRetificationFields(cleanData);
     const flatRow = serializeParecerFlat(cleanData, id, now, createdAt);
     const syncedRow = await syncRemoteDocument('pareceres', flatRow);
-    const updated = [syncedRow, ...current.filter((item) => item.id !== id)];
+    const persistedRow = { ...retifFields, ...syncedRow };
+    const updated = [persistedRow, ...current.filter((item) => item.id !== id)];
     writeCollection(STORAGE_KEYS.PARECERES, updated);
 
-    return hydrateParecerRow(syncedRow);
+    return hydrateParecerRow(persistedRow);
   }
 
   async deleteParecer(id: string): Promise<void> {
@@ -809,12 +858,14 @@ export class LocalDocumentRepository implements DocumentRepository {
     const existing = current.find((item) => item.id === id);
     const createdAt = existing?.created_at || cleanData.created_at || now;
 
+    const retifFields = serializeRetificationFields(cleanData);
     const flatRow = serializeOficioFlat(cleanData, id, now, createdAt);
     const syncedRow = await syncRemoteDocument('oficios', flatRow);
-    const updated = [syncedRow, ...current.filter((item) => item.id !== id)];
+    const persistedRow = { ...retifFields, ...syncedRow };
+    const updated = [persistedRow, ...current.filter((item) => item.id !== id)];
     writeCollection(STORAGE_KEYS.OFICIOS, updated);
 
-    return hydrateOficioRow(syncedRow);
+    return hydrateOficioRow(persistedRow);
   }
 
   async deleteOficio(id: string): Promise<void> {
@@ -853,12 +904,14 @@ export class LocalDocumentRepository implements DocumentRepository {
     const existing = current.find((item) => item.id === id);
     const createdAt = existing?.created_at || cleanData.created_at || now;
 
+    const retifFields = serializeRetificationFields(cleanData);
     const flatRow = serializeNotificacaoFlat(cleanData, id, now, createdAt);
     const syncedRow = await syncRemoteDocument('notificacoes', flatRow);
-    const updated = [syncedRow, ...current.filter((item) => item.id !== id)];
+    const persistedRow = { ...retifFields, ...syncedRow };
+    const updated = [persistedRow, ...current.filter((item) => item.id !== id)];
     writeCollection(STORAGE_KEYS.NOTIFICACOES, updated);
 
-    return hydrateNotificacaoRow(syncedRow);
+    return hydrateNotificacaoRow(persistedRow);
   }
 
   async deleteNotificacao(id: string): Promise<void> {

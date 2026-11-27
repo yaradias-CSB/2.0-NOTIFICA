@@ -1,11 +1,21 @@
 import React, { useState, useMemo, useRef, useEffect, useContext } from 'react';
-import { Search, ChevronDown, ChevronUp, Check, Eye, Edit, Trash2, Database, Filter, ArrowUpDown, ArrowUp, ArrowDown, Loader2, ChevronLeft, ChevronRight, Download, FileDown } from 'lucide-react';
+import { Search, ChevronDown, ChevronUp, Check, Eye, Edit, Trash2, Database, Filter, ArrowUpDown, ArrowUp, ArrowDown, Loader2, ChevronLeft, ChevronRight, Download, FileDown, RefreshCw } from 'lucide-react';
+import { toast } from 'sonner';
 import { generateParecerPDF, generateOficioPDF, generateNotificacaoPDF } from '../services/pdfService';
 import { OPS_MUNICIPIOS, OPS_ANALISTA, OPS_RESPONSAVEL_TECNICO } from '../constants';
 import { RiscoEnum, DanoEnum, ParecerData, OficioData } from '../types';
 import { DataContext, AppDocument } from '../contexts/DataContext';
 import { useAuth } from '../contexts/AuthContext';
 import { logActivity } from '../lib/audit';
+import ConfirmModal from './ui/ConfirmModal';
+import { RetificarDocumentoModal } from './ui/RetificarDocumentoModal';
+import {
+  canUserDeleteDraft,
+  canUserEditDraft,
+  canUserRectifyDocument,
+  createRetificationDraft,
+  isConcludedStatus,
+} from '../lib/documentPermissions';
 import * as XLSX from 'xlsx';
 
 // --- MultiSelect Component (Reused) ---
@@ -112,7 +122,19 @@ interface ParecerListProps {
 
 const ParecerList: React.FC<ParecerListProps> = ({ onEditParecer, onViewParecer }) => {
   const { documents: pareceres, loading, refreshData, deleteParecer, deleteOficio, deleteNotificacao, deleteFiscalizacao } = useContext(DataContext);
-  const { canEdit, canDelete } = useAuth();
+  const { user, profile, canEdit } = useAuth();
+  const currentActor = useMemo(
+    () => ({
+      userId: user?.id,
+      perfilId: profile?.id,
+      name: profile?.nome,
+      email: user?.email,
+      canEdit,
+    }),
+    [user?.id, profile?.id, profile?.nome, user?.email, canEdit]
+  );
+  const [rectifyTarget, setRectifyTarget] = useState<AppDocument | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<{ id: string; item: AppDocument } | null>(null);
   const [filters, setFilters] = useState({
     municipios: [] as string[],
     dpa: [] as string[],
@@ -549,17 +571,16 @@ const ParecerList: React.FC<ParecerListProps> = ({ onEditParecer, onViewParecer 
   }, [totalPages, currentPage]);
 
   const handleEdit = (item: AppDocument) => {
-    if (!canEdit) {
-      onViewParecer?.(item as any);
+    if (canUserEditDraft(item, currentActor)) {
+      onEditParecer?.(item as any);
       return;
     }
-    if (item.status === 'Concluído') {
-      if (window.confirm(`Este ${item.tipo_documento.toLowerCase()} já está concluído. Deseja realmente alterá-lo?`)) {
-        onEditParecer?.(item as any);
-      }
-    } else {
-      onEditParecer?.(item as any);
+    if (isConcludedStatus(item.status) && canUserRectifyDocument(item, canEdit)) {
+      setRectifyTarget(item);
+      return;
     }
+    toast.info('Documento de outro autor ou protegido contra edição: abrindo para visualização.');
+    onViewParecer?.(item as any);
   };
 
   const handleExportPDF = async (item: AppDocument) => {
@@ -580,32 +601,43 @@ const ParecerList: React.FC<ParecerListProps> = ({ onEditParecer, onViewParecer 
       });
     } catch (err) {
       console.error('Erro ao exportar PDF:', err);
-      alert('Erro ao gerar o arquivo PDF.');
+      toast.error('Erro ao gerar o arquivo PDF.');
     }
   };
 
-  const handleDelete = async (id: string, item: AppDocument) => {
-    if (!canDelete) return;
-    if (window.confirm(`Tem certeza que deseja excluir este ${item.tipo_documento.toLowerCase()}?`)) {
-      let result;
-      if (item.tipo_documento.startsWith('Parecer Técnico')) {
-        result = await deleteParecer(id);
-      } else if (item.tipo_documento === 'Ofício de Pendências') {
-        result = await deleteOficio(id);
-      } else if (item.tipo_documento === 'Notificação') {
-        result = await deleteNotificacao(id);
-      } else if (item.tipo_documento === 'Fiscalização') {
-        result = await deleteFiscalizacao(id);
-      } else {
-        // Fallback
-        result = await deleteParecer(id);
-      }
+  const handleDelete = (id: string, item: AppDocument) => {
+    if (!canUserDeleteDraft(item, currentActor)) {
+      toast.warning(
+        isConcludedStatus(item.status)
+          ? 'Documentos concluídos não podem ser excluídos.'
+          : 'Somente o autor pode excluir seu próprio rascunho.'
+      );
+      return;
+    }
+    setDeleteTarget({ id, item });
+  };
 
-      if (result.success) {
-        alert(`${item.tipo_documento} excluído com sucesso!`);
-      } else {
-        alert(result.message || `Erro ao excluir ${item.tipo_documento.toLowerCase()}`);
-      }
+  const confirmDelete = async () => {
+    if (!deleteTarget) return;
+    const { id, item } = deleteTarget;
+    setDeleteTarget(null);
+    let result;
+    if (item.tipo_documento.startsWith('Parecer Técnico')) {
+      result = await deleteParecer(id);
+    } else if (item.tipo_documento.includes('Ofício') || item.tipo_documento.includes('Oficio')) {
+      result = await deleteOficio(id);
+    } else if (item.tipo_documento === 'Notificação') {
+      result = await deleteNotificacao(id);
+    } else if (item.tipo_documento === 'Fiscalização') {
+      result = await deleteFiscalizacao(id);
+    } else {
+      result = await deleteParecer(id);
+    }
+
+    if (result.success) {
+      toast.success(`${item.tipo_documento} excluído com sucesso!`);
+    } else {
+      toast.error(result.message || `Erro ao excluir ${item.tipo_documento.toLowerCase()}`);
     }
   };
 
@@ -773,11 +805,14 @@ const ParecerList: React.FC<ParecerListProps> = ({ onEditParecer, onViewParecer 
                     </div>
                     <div className="flex items-center gap-1 sm:gap-1.5 shrink-0">
                       <button onClick={() => onViewParecer?.(item)} className="p-2 sm:p-2.5 text-slate-500 hover:text-emerald-600 bg-slate-100 hover:bg-emerald-50 rounded-xl transition-colors active:scale-95 touch-manipulation" title="Visualizar"><Eye size={15} /></button>
-                      {canEdit && (
+                      {canUserEditDraft(item, currentActor) && (
                         <button onClick={() => handleEdit(item)} className="p-2 sm:p-2.5 text-slate-500 hover:text-blue-600 bg-slate-100 hover:bg-blue-50 rounded-xl transition-colors active:scale-95 touch-manipulation" title="Editar"><Edit size={15} /></button>
                       )}
+                      {canUserRectifyDocument(item, canEdit) && (
+                        <button onClick={() => setRectifyTarget(item)} className="p-2 sm:p-2.5 text-amber-700 bg-amber-50 hover:bg-amber-100 rounded-xl transition-colors active:scale-95 touch-manipulation" title="Retificar documento concluído"><RefreshCw size={15} /></button>
+                      )}
                       <button onClick={() => handleExportPDF(item)} className="p-2 sm:p-2.5 text-slate-500 hover:text-rose-600 bg-slate-100 hover:bg-rose-50 rounded-xl transition-colors active:scale-95 touch-manipulation" title="Exportar PDF"><FileDown size={15} /></button>
-                      {canDelete && (
+                      {canUserDeleteDraft(item, currentActor) && (
                         <button onClick={() => item.id && handleDelete(item.id, item)} className="p-2 sm:p-2.5 text-slate-500 hover:text-red-600 bg-slate-100 hover:bg-red-50 rounded-xl transition-colors active:scale-95 touch-manipulation" title="Excluir"><Trash2 size={15} /></button>
                       )}
                     </div>
@@ -920,11 +955,14 @@ const ParecerList: React.FC<ParecerListProps> = ({ onEditParecer, onViewParecer 
                             <td className="px-6 py-4 text-right">
                                 <div className="flex justify-end gap-2">
                                     <button onClick={() => onViewParecer?.(item as any)} className="p-2 text-slate-400 hover:text-emerald-600" title="Visualizar"><Eye size={16} /></button>
-                                    {canEdit && (
+                                    {canUserEditDraft(item, currentActor) && (
                                       <button onClick={() => handleEdit(item)} className="p-2 text-slate-400 hover:text-blue-600" title="Editar"><Edit size={16} /></button>
                                     )}
+                                    {canUserRectifyDocument(item, canEdit) && (
+                                      <button onClick={() => setRectifyTarget(item)} className="p-2 text-amber-600 hover:text-amber-800" title="Retificar"><RefreshCw size={16} /></button>
+                                    )}
                                     <button onClick={() => handleExportPDF(item)} className="p-2 text-slate-400 hover:text-rose-600" title="Exportar PDF"><FileDown size={16} /></button>
-                                    {canDelete && (
+                                    {canUserDeleteDraft(item, currentActor) && (
                                       <button onClick={() => item.id && handleDelete(item.id, item)} className="p-2 text-slate-400 hover:text-red-600" title="Excluir"><Trash2 size={16} /></button>
                                     )}
                                 </div>
@@ -1003,6 +1041,29 @@ const ParecerList: React.FC<ParecerListProps> = ({ onEditParecer, onViewParecer 
                 </div>
             </div>
         </div>
+
+        <RetificarDocumentoModal
+          isOpen={Boolean(rectifyTarget)}
+          doc={rectifyTarget}
+          onCancel={() => setRectifyTarget(null)}
+          onConfirm={(justification) => {
+            if (!rectifyTarget) return;
+            const draft = createRetificationDraft(rectifyTarget, justification, currentActor);
+            setRectifyTarget(null);
+            toast.success('Rascunho de retificação criado. Edite e salve para registrar.');
+            onEditParecer?.(draft as any);
+          }}
+        />
+
+        <ConfirmModal
+          isOpen={Boolean(deleteTarget)}
+          title="Excluir rascunho"
+          message={`Tem certeza que deseja excluir este ${deleteTarget?.item.tipo_documento.toLowerCase() || 'documento'}?`}
+          variant="danger"
+          confirmLabel="Excluir"
+          onConfirm={() => void confirmDelete()}
+          onCancel={() => setDeleteTarget(null)}
+        />
     </div>
   );
 };

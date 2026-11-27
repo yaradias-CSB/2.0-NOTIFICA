@@ -2,8 +2,9 @@ import React, { useContext, useEffect, useMemo, useState } from 'react';
 import {
   Building2,
   CheckCircle2,
+  ChevronLeft,
+  ChevronRight,
   Database,
-  FileCheck2,
   GitPullRequest,
   Loader2,
   PencilLine,
@@ -26,9 +27,16 @@ import {
 } from '../../types/ecosystem';
 import { normalizeDocumentNumber } from '../../lib/security';
 import { normalizeCarCode, normalizeSearchText } from '../../data/localAdministraRepository';
+import {
+  describeBarragemRelationship,
+  normalizeLookupText,
+  paginateItems,
+  searchBarragens,
+} from '../../lib/barragemSearch';
 import { authFetch } from '../../lib/supabase';
 import { useAuth } from '../../contexts/AuthContext';
 import { ChangeRequestModal } from './ChangeRequestModal';
+import { RelatedDocumentsPanel, type RelatedDocumentItem } from './RelatedDocumentsPanel';
 
 interface AdministraEntityPickerProps {
   readOnly?: boolean;
@@ -38,9 +46,11 @@ interface AdministraEntityPickerProps {
   cpfCnpj?: string;
   codigoSnisb?: string;
   nomeBarragem?: string;
+  processo?: string;
   onSelectEmpreendedor: (empreendedor: EmpreendedorCanonico) => void;
   onSelectBarragem: (barragem: BarragemCanonica) => void;
   onSelectRT?: (rt: ResponsavelTecnicoCanonico, selectedArt?: string) => void;
+  onOpenRelatedDocument?: (item: RelatedDocumentItem) => void;
   onClearLinks?: () => void;
   onSaveToAdministra?: () => Promise<void>;
   savingToAdministra?: boolean;
@@ -60,12 +70,14 @@ export const AdministraEntityPicker: React.FC<AdministraEntityPickerProps> = ({
   currentDocumentId,
   selectedEmpreendedorId,
   selectedBarragemId,
-  cpfCnpj,
+  cpfCnpj: _cpfCnpj,
   codigoSnisb,
   nomeBarragem,
+  processo,
   onSelectEmpreendedor,
   onSelectBarragem,
   onSelectRT,
+  onOpenRelatedDocument,
   onClearLinks,
   onSaveToAdministra,
   savingToAdministra = false,
@@ -86,7 +98,6 @@ export const AdministraEntityPicker: React.FC<AdministraEntityPickerProps> = ({
     loading,
     refreshEcosystem,
     canEditDirectly,
-    getProductsForEntity,
     linkArtToRT,
   } = useContext(EcosystemContext);
   const { canEdit } = useAuth();
@@ -95,10 +106,12 @@ export const AdministraEntityPicker: React.FC<AdministraEntityPickerProps> = ({
   const [empQuery, setEmpQuery] = useState('');
   const [barQuery, setBarQuery] = useState('');
   const [rtQuery, setRtQuery] = useState('');
+  const [empPage, setEmpPage] = useState(1);
+  const [barPage, setBarPage] = useState(1);
+  const [rtPage, setRtPage] = useState(1);
   const [stagedRtId, setStagedRtId] = useState('');
   const [newArtInput, setNewArtInput] = useState('');
   const [savingArt, setSavingArt] = useState(false);
-  const [showProducts, setShowProducts] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [remoteEmpHits, setRemoteEmpHits] = useState<EmpreendedorCanonico[]>([]);
   const [remoteBarHits, setRemoteBarHits] = useState<BarragemCanonica[]>([]);
@@ -115,7 +128,19 @@ export const AdministraEntityPicker: React.FC<AdministraEntityPickerProps> = ({
   });
 
   useEffect(() => {
-    const q = (empQuery.trim() || barQuery.trim() || rtQuery.trim());
+    setEmpPage(1);
+  }, [empQuery]);
+
+  useEffect(() => {
+    setBarPage(1);
+  }, [barQuery, selectedEmpreendedorId]);
+
+  useEffect(() => {
+    setRtPage(1);
+  }, [rtQuery]);
+
+  useEffect(() => {
+    const q = barQuery.trim() || empQuery.trim() || rtQuery.trim();
     const hasQuery = q.length >= 2;
     if ((!hasQuery && !selectedEmpreendedorId) || (typeof navigator !== 'undefined' && !navigator.onLine)) {
       if (!hasQuery) {
@@ -132,6 +157,9 @@ export const AdministraEntityPicker: React.FC<AdministraEntityPickerProps> = ({
         const params = new URLSearchParams();
         if (hasQuery) params.set('q', q);
         if (selectedEmpreendedorId) params.set('empreendedorId', selectedEmpreendedorId);
+        params.set('includeUnlinked', 'true');
+        params.set('page', '1');
+        params.set('pageSize', '250');
         const res = await authFetch(`/api/registry/search?${params.toString()}`, {
           signal: controller.signal,
         });
@@ -179,80 +207,67 @@ export const AdministraEntityPicker: React.FC<AdministraEntityPickerProps> = ({
     [allBarragens, selectedBarragemId]
   );
 
-  const filteredEmpreendedores = useMemo(() => {
+  const filteredEmpreendedoresAll = useMemo(() => {
     const raw = empQuery.trim();
-    if (!raw) return allEmpreendedores.slice(0, 25);
+    if (!raw) return allEmpreendedores;
 
-    const textQ = normalizeSearchText(raw);
+    const textQ = normalizeLookupText(raw);
     const digitsQ = normalizeDocumentNumber(raw);
     const carQ = normalizeCarCode(raw);
 
-    return allEmpreendedores
-      .filter((e) => {
-        if (normalizeSearchText(e.nome).includes(textQ)) return true;
-        if (normalizeSearchText(e.municipio).includes(textQ)) return true;
-        if ((e.cpfCnpj || '').toLowerCase().includes(raw.toLowerCase())) return true;
-        if (digitsQ.length >= 2 && (e.cpfCnpjNormalizado || normalizeDocumentNumber(e.cpfCnpj)).includes(digitsQ)) {
-          return true;
-        }
-        if (carQ.length >= 3 && normalizeCarCode(e.carMt).includes(carQ)) return true;
-        if (normalizeSearchText(e.carMt).includes(textQ)) return true;
-        return false;
-      })
-      .slice(0, 25);
+    return allEmpreendedores.filter((e) => {
+      if (normalizeLookupText(e.id).includes(textQ)) return true;
+      if (normalizeLookupText(e.nome).includes(textQ)) return true;
+      if (normalizeLookupText(e.municipio).includes(textQ)) return true;
+      if ((e.cpfCnpj || '').toLowerCase().includes(raw.toLowerCase())) return true;
+      if (digitsQ.length >= 2 && (e.cpfCnpjNormalizado || normalizeDocumentNumber(e.cpfCnpj)).includes(digitsQ)) {
+        return true;
+      }
+      if (carQ.length >= 3 && normalizeCarCode(e.carMt).includes(carQ)) return true;
+      if (normalizeSearchText(e.carMt).includes(textQ)) return true;
+      return false;
+    });
   }, [allEmpreendedores, empQuery]);
 
-  const filteredBarragens = useMemo(() => {
-    const raw = barQuery.trim();
-    const base = selectedEmpreendedorId
-      ? allBarragens.filter((b) => !b.empreendedorId || b.empreendedorId === selectedEmpreendedorId)
-      : allBarragens;
+  const pagedEmpreendedores = useMemo(
+    () => paginateItems(filteredEmpreendedoresAll, empPage, 25),
+    [filteredEmpreendedoresAll, empPage]
+  );
 
-    if (!raw) return base.slice(0, 25);
-
-    const textQ = normalizeSearchText(raw);
-    const digitsQ = normalizeDocumentNumber(raw);
-    const carQ = normalizeCarCode(raw);
-
-    return base
-      .filter((b) => {
-        if (normalizeSearchText(b.nomeBarragem).includes(textQ)) return true;
-        if (normalizeSearchText(b.empreendimento).includes(textQ)) return true;
-        if (normalizeSearchText(b.codigoSnisb).includes(textQ)) return true;
-        if (normalizeSearchText(b.municipio).includes(textQ)) return true;
-        if (normalizeSearchText(b.processoReferencia).includes(textQ)) return true;
-        if (normalizeSearchText(b.cursoAguaBarrado).includes(textQ)) return true;
-        if (normalizeSearchText(b.car).includes(textQ)) return true;
-        if (carQ.length >= 3 && normalizeCarCode(b.car).includes(carQ)) return true;
-        if (normalizeSearchText(b.empreendedorNome).includes(textQ)) return true;
-        if (digitsQ.length >= 2 && normalizeDocumentNumber(b.empreendedorCpfCnpj || '').includes(digitsQ)) {
-          return true;
-        }
-        const linkedEmp = allEmpreendedores.find((e) => e.id === b.empreendedorId);
-        if (linkedEmp && carQ.length >= 3 && normalizeCarCode(linkedEmp.carMt).includes(carQ)) {
-          return true;
-        }
-        return false;
-      })
-      .slice(0, 25);
+  const filteredBarragensAll = useMemo(() => {
+    return searchBarragens(allBarragens, {
+      query: barQuery,
+      empreendedorId: selectedEmpreendedorId || undefined,
+      includeUnlinked: true,
+      empreendedores: allEmpreendedores,
+    });
   }, [allBarragens, barQuery, selectedEmpreendedorId, allEmpreendedores]);
 
-  const filteredRTs = useMemo(() => {
+  const pagedBarragens = useMemo(
+    () => paginateItems(filteredBarragensAll, barPage, 25),
+    [filteredBarragensAll, barPage]
+  );
+
+  const filteredRTsAll = useMemo(() => {
     const raw = rtQuery.trim();
-    if (!raw) return allResponsaveisTecnicos.slice(0, 20);
-    const textQ = normalizeSearchText(raw);
+    if (!raw) return allResponsaveisTecnicos;
+    const textQ = normalizeLookupText(raw);
     const digitsQ = normalizeDocumentNumber(raw);
-    return allResponsaveisTecnicos
-      .filter(
-        (rt) =>
-          normalizeSearchText(rt.nome).includes(textQ) ||
-          normalizeSearchText(rt.registroProfissional).includes(textQ) ||
-          normalizeSearchText(rt.art).includes(textQ) ||
-          (rt.artsVinculadas || []).some((a) => normalizeSearchText(a.art).includes(textQ)) ||
-          (digitsQ.length >= 2 && normalizeDocumentNumber(rt.cpf || '').includes(digitsQ))
-      )
-      .slice(0, 20);
+    return allResponsaveisTecnicos.filter(
+      (rt) =>
+        normalizeLookupText(rt.id).includes(textQ) ||
+        normalizeLookupText(rt.nome).includes(textQ) ||
+        normalizeLookupText(rt.registroProfissional).includes(textQ) ||
+        normalizeLookupText(rt.art).includes(textQ) ||
+        (rt.artsVinculadas || []).some((a) => normalizeLookupText(a.art).includes(textQ)) ||
+        (digitsQ.length >= 2 && normalizeDocumentNumber(rt.cpf || '').includes(digitsQ))
+    );
   }, [allResponsaveisTecnicos, rtQuery]);
+
+  const pagedRTs = useMemo(
+    () => paginateItems(filteredRTsAll, rtPage, 25),
+    [filteredRTsAll, rtPage]
+  );
 
   const stagedRt = useMemo(
     () => allResponsaveisTecnicos.find((rt) => rt.id === stagedRtId) || null,
@@ -288,25 +303,13 @@ export const AdministraEntityPicker: React.FC<AdministraEntityPickerProps> = ({
     return entries;
   }, [stagedRt]);
 
-  const matchedProducts = useMemo(() => {
-    return getProductsForEntity({
-      empreendedorId: selectedEmpreendedorId,
-      cpfCnpj: cpfCnpj || selectedEmpreendedor?.cpfCnpj,
-      barragemId: selectedBarragemId,
-      codigoSnisb: codigoSnisb || selectedBarragem?.codigoSnisb,
-      nomeBarragem: nomeBarragem || selectedBarragem?.nomeBarragem,
-    }).filter((item) => !currentDocumentId || item.id !== currentDocumentId);
-  }, [
-    getProductsForEntity,
-    selectedEmpreendedorId,
-    cpfCnpj,
-    selectedEmpreendedor,
-    selectedBarragemId,
-    codigoSnisb,
-    selectedBarragem,
-    nomeBarragem,
-    currentDocumentId,
-  ]);
+  const selectedBarragemRelationship = useMemo(
+    () =>
+      selectedBarragem
+        ? describeBarragemRelationship(selectedBarragem, { selectedEmpreendedorId })
+        : null,
+    [selectedBarragem, selectedEmpreendedorId]
+  );
 
   const externalLinkedRecords = useMemo(() => {
     const list: Array<{
@@ -488,12 +491,12 @@ export const AdministraEntityPicker: React.FC<AdministraEntityPickerProps> = ({
 
             {empQuery.trim().length > 0 && (
               <div className="rounded-xl border border-emerald-300 bg-white shadow-lg max-h-72 overflow-y-auto divide-y divide-slate-100">
-                {filteredEmpreendedores.length === 0 ? (
+                {pagedEmpreendedores.items.length === 0 ? (
                   <p className="p-3 text-xs text-slate-500">
                     Nenhum empreendedor encontrado para "{empQuery}". Você pode preencher manualmente nos campos abaixo.
                   </p>
                 ) : (
-                  filteredEmpreendedores.map((emp) => (
+                  pagedEmpreendedores.items.map((emp) => (
                     <button
                       key={emp.id}
                       type="button"
@@ -528,21 +531,53 @@ export const AdministraEntityPicker: React.FC<AdministraEntityPickerProps> = ({
               <option value="">
                 {allEmpreendedores.length === 0
                   ? 'Nenhum empreendedor na base (será salvo ao concluir)'
-                  : `-- Escolher empreendedor (${filteredEmpreendedores.length}) --`}
+                  : `-- Escolher empreendedor (${pagedEmpreendedores.total}) --`}
               </option>
-              {filteredEmpreendedores.map((emp) => (
+              {selectedEmpreendedor &&
+                !pagedEmpreendedores.items.some((item) => item.id === selectedEmpreendedor.id) && (
+                  <option value={selectedEmpreendedor.id}>
+                    {selectedEmpreendedor.nome} {selectedEmpreendedor.cpfCnpj ? `(${selectedEmpreendedor.cpfCnpj})` : ''}{' '}
+                    [{ECOSYSTEM_SYSTEM_LABELS[selectedEmpreendedor.sourceSystem].shortName}]
+                  </option>
+                )}
+              {pagedEmpreendedores.items.map((emp) => (
                 <option key={emp.id} value={emp.id}>
                   {emp.nome} {emp.cpfCnpj ? `(${emp.cpfCnpj})` : ''}{' '}
                   {emp.carMt ? `[CAR: ${emp.carMt}]` : ''} [{ECOSYSTEM_SYSTEM_LABELS[emp.sourceSystem].shortName}]
                 </option>
               ))}
             </select>
+            {pagedEmpreendedores.totalPages > 1 && (
+              <div className="flex items-center justify-between text-[11px] text-slate-500 pt-1">
+                <span className="tabular-nums">
+                  Página {pagedEmpreendedores.page} de {pagedEmpreendedores.totalPages} ({pagedEmpreendedores.total} empreendedores)
+                </span>
+                <div className="flex items-center gap-1.5">
+                  <button
+                    type="button"
+                    disabled={empPage <= 1}
+                    onClick={() => setEmpPage((p) => Math.max(1, p - 1))}
+                    className="inline-flex items-center gap-0.5 px-2 py-0.5 rounded border border-slate-200 bg-white hover:bg-slate-50 text-slate-700 font-semibold disabled:opacity-40 cursor-pointer"
+                  >
+                    <ChevronLeft size={12} /> Anterior
+                  </button>
+                  <button
+                    type="button"
+                    disabled={empPage >= pagedEmpreendedores.totalPages}
+                    onClick={() => setEmpPage((p) => Math.min(pagedEmpreendedores.totalPages, p + 1))}
+                    className="inline-flex items-center gap-0.5 px-2 py-0.5 rounded border border-slate-200 bg-white hover:bg-slate-50 text-slate-700 font-semibold disabled:opacity-40 cursor-pointer"
+                  >
+                    Próxima <ChevronRight size={12} />
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
 
           {/* Barragem Picker */}
           <div className="space-y-1.5 relative">
             <label className="text-[10px] font-black uppercase tracking-widest text-slate-600 flex items-center gap-1.5">
-              <Waves size={12} className="text-emerald-600" /> Buscar Barragem (Nome, SNISB, Município)
+              <Waves size={12} className="text-emerald-600" /> Buscar Barragem (Nome, SNISB, CAR, Município, Processo ou ID)
             </label>
             <div className="relative">
               <Search size={13} className="absolute left-3 top-3 text-slate-400" />
@@ -550,7 +585,7 @@ export const AdministraEntityPicker: React.FC<AdministraEntityPickerProps> = ({
                 type="text"
                 value={barQuery}
                 onChange={(e) => setBarQuery(e.target.value)}
-                placeholder="Nome, SNISB, município ou CAR..."
+                placeholder="Nome, SNISB, CAR, município, processo ou ID..."
                 className="w-full pl-8 pr-8 py-2 bg-white border border-slate-300 rounded-t-xl text-xs font-semibold text-slate-700 focus:border-emerald-600 outline-none"
               />
               {barQuery && (
@@ -567,34 +602,43 @@ export const AdministraEntityPicker: React.FC<AdministraEntityPickerProps> = ({
 
             {barQuery.trim().length > 0 && (
               <div className="rounded-xl border border-emerald-300 bg-white shadow-lg max-h-72 overflow-y-auto divide-y divide-slate-100">
-                {filteredBarragens.length === 0 ? (
+                {pagedBarragens.items.length === 0 ? (
                   <p className="p-3 text-xs text-slate-500">
                     Nenhuma barragem encontrada para "{barQuery}".
                   </p>
                 ) : (
-                  filteredBarragens.map((bar) => (
-                    <button
-                      key={bar.id}
-                      type="button"
-                      onClick={() => {
-                        onSelectBarragem(bar);
-                        setBarQuery('');
-                      }}
-                      className="w-full text-left px-4 py-3 hover:bg-emerald-50 transition-colors flex items-center justify-between gap-3 cursor-pointer"
-                    >
-                      <div className="min-w-0 flex-1 space-y-0.5">
-                        <p className="text-xs sm:text-sm font-black text-slate-900 break-words">{bar.nomeBarragem}</p>
-                        <p className="text-[11px] font-semibold text-slate-600 break-words">
-                          {bar.municipio || 'MT'}
-                          {bar.codigoSnisb ? ` • SNISB: ${bar.codigoSnisb}` : ''}
-                          {bar.empreendedorNome ? ` • ${bar.empreendedorNome}` : ''}
-                        </p>
-                      </div>
-                      <span className="shrink-0 px-3 py-1.5 rounded-lg bg-emerald-600 text-white text-[10px] font-black uppercase">
-                        Usar
-                      </span>
-                    </button>
-                  ))
+                  pagedBarragens.items.map((bar) => {
+                    const rel = describeBarragemRelationship(bar, { selectedEmpreendedorId });
+                    return (
+                      <button
+                        key={bar.id}
+                        type="button"
+                        onClick={() => {
+                          onSelectBarragem(bar);
+                          setBarQuery('');
+                        }}
+                        className="w-full text-left px-4 py-3 hover:bg-emerald-50 transition-colors flex items-center justify-between gap-3 cursor-pointer"
+                      >
+                        <div className="min-w-0 flex-1 space-y-0.5">
+                          <p className="text-xs sm:text-sm font-black text-slate-900 break-words">
+                            {bar.nomeBarragem || bar.empreendimento || bar.id}
+                          </p>
+                          <p className="text-[11px] font-semibold text-slate-600 break-words">
+                            {bar.municipio || 'Município não informado'}
+                            {bar.codigoSnisb ? ` • SNISB: ${bar.codigoSnisb}` : ''}
+                            {bar.car ? ` • CAR: ${bar.car}` : ''}
+                            {bar.empreendedorNome ? ` • ${bar.empreendedorNome}` : ''}
+                          </p>
+                          <p className="text-[10px] font-semibold text-slate-500">
+                            {rel.label} · {rel.coordinatesLabel}
+                          </p>
+                        </div>
+                        <span className="shrink-0 px-3 py-1.5 rounded-lg bg-emerald-600 text-white text-[10px] font-black uppercase">
+                          Usar
+                        </span>
+                      </button>
+                    );
+                  })
                 )}
               </div>
             )}
@@ -610,15 +654,54 @@ export const AdministraEntityPicker: React.FC<AdministraEntityPickerProps> = ({
               <option value="">
                 {allBarragens.length === 0
                   ? 'Nenhuma barragem na base (será salva ao concluir)'
-                  : `-- Escolher barragem (${filteredBarragens.length}) --`}
+                  : `-- Escolher barragem (${pagedBarragens.total}) --`}
               </option>
-              {filteredBarragens.map((bar) => (
-                <option key={bar.id} value={bar.id}>
-                  {bar.nomeBarragem} {bar.codigoSnisb ? `[SNISB: ${bar.codigoSnisb}]` : ''} — {bar.municipio || 'MT'} [
-                  {ECOSYSTEM_SYSTEM_LABELS[bar.sourceSystem].shortName}]
-                </option>
-              ))}
+              {selectedBarragem &&
+                !pagedBarragens.items.some((item) => item.id === selectedBarragem.id) && (
+                  <option value={selectedBarragem.id}>
+                    {selectedBarragem.nomeBarragem || selectedBarragem.id}{' '}
+                    {selectedBarragem.codigoSnisb ? `[SNISB: ${selectedBarragem.codigoSnisb}]` : ''} —{' '}
+                    {selectedBarragem.municipio || 'MT'} [
+                    {describeBarragemRelationship(selectedBarragem, { selectedEmpreendedorId }).label}]
+                  </option>
+                )}
+              {pagedBarragens.items.map((bar) => {
+                const rel = describeBarragemRelationship(bar, { selectedEmpreendedorId });
+                return (
+                  <option key={bar.id} value={bar.id}>
+                    {bar.nomeBarragem || bar.empreendimento || bar.id}{' '}
+                    {bar.codigoSnisb ? `[SNISB: ${bar.codigoSnisb}]` : ''} — {bar.municipio || 'Sem município'} [
+                    {rel.label}
+                    {!rel.hasCoordinates ? ' · coord. indisponíveis' : ''}]
+                  </option>
+                );
+              })}
             </select>
+            {pagedBarragens.totalPages > 1 && (
+              <div className="flex items-center justify-between text-[11px] text-slate-500 pt-1">
+                <span className="tabular-nums">
+                  Página {pagedBarragens.page} de {pagedBarragens.totalPages} ({pagedBarragens.total} barragens)
+                </span>
+                <div className="flex items-center gap-1.5">
+                  <button
+                    type="button"
+                    disabled={barPage <= 1}
+                    onClick={() => setBarPage((p) => Math.max(1, p - 1))}
+                    className="inline-flex items-center gap-0.5 px-2 py-0.5 rounded border border-slate-200 bg-white hover:bg-slate-50 text-slate-700 font-semibold disabled:opacity-40 cursor-pointer"
+                  >
+                    <ChevronLeft size={12} /> Anterior
+                  </button>
+                  <button
+                    type="button"
+                    disabled={barPage >= pagedBarragens.totalPages}
+                    onClick={() => setBarPage((p) => Math.min(pagedBarragens.totalPages, p + 1))}
+                    className="inline-flex items-center gap-0.5 px-2 py-0.5 rounded border border-slate-200 bg-white hover:bg-slate-50 text-slate-700 font-semibold disabled:opacity-40 cursor-pointer"
+                  >
+                    Próxima <ChevronRight size={12} />
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
 
           {/* RT Picker */}
@@ -649,12 +732,12 @@ export const AdministraEntityPicker: React.FC<AdministraEntityPickerProps> = ({
               </div>
               {rtQuery.trim().length > 0 && (
                 <div className="rounded-xl border border-emerald-300 bg-white shadow-lg max-h-72 overflow-y-auto divide-y divide-slate-100">
-                  {filteredRTs.length === 0 ? (
+                  {pagedRTs.items.length === 0 ? (
                     <p className="p-3 text-xs text-slate-500">
                       Nenhum RT encontrado para "{rtQuery}". Preencha manualmente abaixo para cadastrar no Administra.
                     </p>
                   ) : (
-                    filteredRTs.map((rt) => (
+                    pagedRTs.items.map((rt) => (
                       <button
                         key={rt.id}
                         type="button"
@@ -698,9 +781,9 @@ export const AdministraEntityPicker: React.FC<AdministraEntityPickerProps> = ({
                 <option value="">
                   {allResponsaveisTecnicos.length === 0
                     ? 'Nenhum RT na base ainda'
-                    : `-- Escolher RT e vincular/cadastrar ART (${filteredRTs.length}) --`}
+                    : `-- Escolher RT e vincular/cadastrar ART (${pagedRTs.total}) --`}
                 </option>
-                {filteredRTs.map((rt) => (
+                {pagedRTs.items.map((rt) => (
                   <option key={rt.id} value={rt.id}>
                     {rt.nome} {rt.registroProfissional ? `(${rt.registroProfissional})` : ''}
                     {rt.art ? ` • ART: ${rt.art}` : ''} [
@@ -708,6 +791,31 @@ export const AdministraEntityPicker: React.FC<AdministraEntityPickerProps> = ({
                   </option>
                 ))}
               </select>
+              {pagedRTs.totalPages > 1 && (
+                <div className="flex items-center justify-between text-[11px] text-slate-500 pt-1">
+                  <span className="tabular-nums">
+                    Página {pagedRTs.page} de {pagedRTs.totalPages} ({pagedRTs.total} RTs)
+                  </span>
+                  <div className="flex items-center gap-1.5">
+                    <button
+                      type="button"
+                      disabled={rtPage <= 1}
+                      onClick={() => setRtPage((p) => Math.max(1, p - 1))}
+                      className="inline-flex items-center gap-0.5 px-2 py-0.5 rounded border border-slate-200 bg-white hover:bg-slate-50 text-slate-700 font-semibold disabled:opacity-40 cursor-pointer"
+                    >
+                      <ChevronLeft size={12} /> Anterior
+                    </button>
+                    <button
+                      type="button"
+                      disabled={rtPage >= pagedRTs.totalPages}
+                      onClick={() => setRtPage((p) => Math.min(pagedRTs.totalPages, p + 1))}
+                      className="inline-flex items-center gap-0.5 px-2 py-0.5 rounded border border-slate-200 bg-white hover:bg-slate-50 text-slate-700 font-semibold disabled:opacity-40 cursor-pointer"
+                    >
+                      Próxima <ChevronRight size={12} />
+                    </button>
+                  </div>
+                </div>
+              )}
 
               {stagedRt && (
                 <div className="rounded-2xl border border-emerald-200 bg-white p-4 space-y-3 shadow-xs">
@@ -858,9 +966,11 @@ export const AdministraEntityPicker: React.FC<AdministraEntityPickerProps> = ({
             <div className="flex items-center gap-2 px-3 py-1.5 rounded-xl text-xs font-bold border bg-emerald-50 border-emerald-200 text-emerald-800">
               <CheckCircle2 size={14} className="text-emerald-600 shrink-0" />
               <span>
-                Barragem vinculada no Administra ({selectedBarragem.nomeBarragem})
-                {typeof barragemCount === 'number' && barragemCount > 1 ? ` (${barragemCount} no documento)` : ''} • Origem:{' '}
-                <strong>{ECOSYSTEM_SYSTEM_LABELS[selectedBarragem.sourceSystem].shortName}</strong>
+                {selectedBarragemRelationship?.label || 'Administra — vínculo oficial'} ({selectedBarragem.nomeBarragem || selectedBarragem.id})
+                {typeof barragemCount === 'number' && barragemCount > 1 ? ` (${barragemCount} no documento)` : ''}
+                {selectedBarragemRelationship && !selectedBarragemRelationship.hasCoordinates
+                  ? ' • coordenadas indisponíveis'
+                  : ''}
               </span>
             </div>
           ) : (
@@ -958,53 +1068,17 @@ export const AdministraEntityPicker: React.FC<AdministraEntityPickerProps> = ({
         </div>
       )}
 
-      {/* Existing Ecosystem Products for this Empreendedor / Barragem */}
-      {matchedProducts.length > 0 && (
-        <div className="rounded-2xl bg-white border border-blue-200 p-4 space-y-3">
-          <div className="flex items-center justify-between gap-2">
-            <div className="flex items-center gap-2 text-blue-900">
-              <FileCheck2 size={16} className="text-blue-600 shrink-0" />
-              <span className="text-xs font-black uppercase tracking-wider">
-                Produtos já existentes no Ecossistema ({matchedProducts.length})
-              </span>
-            </div>
-            <button
-              type="button"
-              onClick={() => setShowProducts((prev) => !prev)}
-              className="text-[11px] font-bold text-blue-700 hover:underline"
-            >
-              {showProducts ? 'Ocultar' : 'Mostrar'}
-            </button>
-          </div>
-
-          {showProducts && (
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5 max-h-48 overflow-y-auto pr-1">
-              {matchedProducts.map((prod) => (
-                <div
-                  key={`${prod.systemId}-${prod.id}`}
-                  className="p-3 rounded-xl bg-slate-50 border border-slate-200 flex flex-col gap-1"
-                >
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="px-2 py-0.5 rounded bg-blue-100 text-blue-800 text-[10px] font-black uppercase">
-                      {ECOSYSTEM_SYSTEM_LABELS[prod.systemId].shortName}
-                    </span>
-                    <span className="text-[10px] font-bold text-slate-500">
-                      {prod.dataEmissao || 'Sem data'}
-                    </span>
-                  </div>
-                  <p className="text-xs font-black text-slate-800 truncate">
-                    {prod.tipoDocumento} {prod.numeroDocumento ? `• ${prod.numeroDocumento}` : ''}
-                  </p>
-                  <p className="text-[11px] text-slate-600 truncate">
-                    {prod.barragemNome || prod.empreendedorNome || 'Registro vinculado'}
-                    {prod.processo ? ` • Proc. ${prod.processo}` : ''}
-                  </p>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-      )}
+      {/* Related Ecosystem Documents (collapsible, on-demand, paginated) */}
+      <RelatedDocumentsPanel
+        barragemId={selectedBarragemId}
+        empreendedorId={selectedEmpreendedorId}
+        processo={processo}
+        codigoSnisb={codigoSnisb || selectedBarragem?.codigoSnisb}
+        nomeBarragem={nomeBarragem || selectedBarragem?.nomeBarragem}
+        excludeId={currentDocumentId}
+        defaultExpanded={false}
+        onOpenLocalDocument={onOpenRelatedDocument}
+      />
 
       <ChangeRequestModal
         isOpen={changeModalState.isOpen}

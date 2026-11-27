@@ -8,6 +8,7 @@ import {
 import { auditRepository } from '../data';
 import { AuditLogRecord, AuditRepository } from '../data/types';
 import { useAuth } from '../contexts/AuthContext';
+import ConfirmModal from './ui/ConfirmModal';
 
 type AuditLog = AuditLogRecord;
 
@@ -28,7 +29,8 @@ export type AppViewId =
   | 'controle_notificacoes'
   | 'audit'
   | 'ecossistema'
-  | 'pendencias';
+  | 'pendencias'
+  | 'mesa_virtual';
 
 export function canAccessAuditLogs(auth: AuditAccessState): boolean {
   return Boolean(!auth.loading && auth.hasSession && auth.isAdmin);
@@ -81,6 +83,7 @@ export const AuditLogs: React.FC = () => {
   const [itemsPerPage] = useState(15);
   
   const [selectedLog, setSelectedLog] = useState<AuditLog | null>(null);
+  const [confirmClearOpen, setConfirmClearOpen] = useState(false);
 
   const fetchLogs = useCallback(async () => {
     if (!isAuthorizedAdmin) {
@@ -114,12 +117,16 @@ export const AuditLogs: React.FC = () => {
     void fetchLogs();
   }, [authLoading, isAuthorizedAdmin, fetchLogs]);
 
-  const handleClearLocalLogs = async () => {
+  const handleClearLocalLogs = () => {
     if (!isAuthorizedAdmin) return;
-    if (window.confirm('Tem certeza de que deseja limpar os logs locais de auditoria?')) {
-      await auditRepository.clearLogs();
-      void fetchLogs();
-    }
+    setConfirmClearOpen(true);
+  };
+
+  const confirmClearLocalLogs = async () => {
+    if (!isAuthorizedAdmin) return;
+    setConfirmClearOpen(false);
+    await auditRepository.clearLogs();
+    void fetchLogs();
   };
 
   // Extract statistics
@@ -678,6 +685,15 @@ export const AuditLogs: React.FC = () => {
         </div>
       )}
 
+      <ConfirmModal
+        isOpen={confirmClearOpen}
+        title="Limpar logs locais de auditoria"
+        message="Tem certeza de que deseja limpar os logs locais de auditoria?"
+        variant="danger"
+        confirmLabel="Limpar logs"
+        onConfirm={() => void confirmClearLocalLogs()}
+        onCancel={() => setConfirmClearOpen(false)}
+      />
     </div>
   );
 };

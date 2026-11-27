@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useContext } from 'react';
+import React, { useState, useEffect, useContext, useMemo } from 'react';
 import { 
   Save, Download, ArrowLeft, Eraser, FileDown, CheckCircle, CheckCircle2, Loader2, 
   MapPin, Phone, Building2, FileText, ClipboardList, Eye,
@@ -37,6 +37,24 @@ import RelatorioTecnicoSection from './RelatorioTecnicoSection';
 import { useAuth } from '../contexts/AuthContext';
 import { SolicitarVistoriaModal } from './SolicitarVistoriaModal';
 import { formatCoordenadasSimplesString } from '../types/solicitacoesVistoria';
+import {
+  describeBarragemRelationship,
+  searchBarragens,
+} from '../lib/barragemSearch';
+import {
+  canUserEditDraft,
+  canUserRectifyDocument,
+  createRetificationDraft,
+  isConcludedStatus,
+} from '../lib/documentPermissions';
+import {
+  applyFieldProposals,
+  detectNonEmptyFieldConflicts,
+  type ConflictItem,
+  type FieldProposal,
+} from '../lib/formSelectionMerge';
+import { EntityOverwriteModal } from './ui/EntityOverwriteModal';
+import { RetificarDocumentoModal } from './ui/RetificarDocumentoModal';
 
 interface NotificaFormProps {
   onBack: () => void;
@@ -138,7 +156,7 @@ const formatCARMT = (v: string) => {
   return res;
 };
 
-const NotificaForm: React.FC<NotificaFormProps> = ({ onBack, initialData, readOnly }) => {
+const NotificaForm: React.FC<NotificaFormProps> = ({ onBack, initialData, readOnly: readOnlyProp }) => {
   const { refreshData, saveNotificacao } = useContext(DataContext);
   const {
     empreendedores: administraEmps,
@@ -148,11 +166,18 @@ const NotificaForm: React.FC<NotificaFormProps> = ({ onBack, initialData, readOn
     syncEntitiesFromForm,
     refreshEcosystem,
   } = useContext(EcosystemContext);
-  const { canEdit } = useAuth();
+  const { user, profile, canEdit } = useAuth();
   const [savingAdministra, setSavingAdministra] = useState(false);
   const [registeringEntity, setRegisteringEntity] = useState<'empreendedor' | 'barragem' | null>(null);
   const [registeringBarragemIndex, setRegisteringBarragemIndex] = useState<number | null>(null);
   const [isSolicitarVistoriaOpen, setIsSolicitarVistoriaOpen] = useState(false);
+  const [isRetificarOpen, setIsRetificarOpen] = useState(false);
+  const [rowBarragemSearch, setRowBarragemSearch] = useState<Record<number, string>>({});
+  const [pendingOverwrite, setPendingOverwrite] = useState<{
+    entityLabel: string;
+    conflicts: ConflictItem[];
+    onApply: (mode: 'empty_only' | 'overwrite_all') => void;
+  } | null>(null);
   
   const [formData, setFormData] = useState<NotificacaoData>(() => {
     const base = initialData ? { ...INITIAL_DATA, ...initialData } : { ...INITIAL_DATA, id: crypto.randomUUID() };
@@ -188,6 +213,20 @@ const NotificaForm: React.FC<NotificaFormProps> = ({ onBack, initialData, readOn
       long: initialBarragens[0]?.long || base.long || ''
     };
   });
+
+  const currentActor = useMemo(
+    () => ({
+      userId: user?.id,
+      perfilId: profile?.id,
+      name: profile?.nome,
+      email: user?.email,
+      canEdit,
+    }),
+    [user?.id, profile?.id, profile?.nome, user?.email, canEdit]
+  );
+
+  const readOnly = Boolean(readOnlyProp) || !canEdit || !canUserEditDraft(formData, currentActor);
+  const canRectify = canUserRectifyDocument(formData, canEdit);
 
   const [isTextoEdited, setIsTextoEdited] = useState(() => {
     return Boolean(initialData?.textoNotificacaoCustomizado);
@@ -336,6 +375,46 @@ const NotificaForm: React.FC<NotificaFormProps> = ({ onBack, initialData, readOn
     });
   };
 
+  const applyAssignedAdministraBarragemToRow = (
+    index: number,
+    found: BarragemCanonica,
+    mode: 'empty_only' | 'overwrite_all'
+  ) => {
+    const { lat: latStr, long: longStr } = coordenadasGmsToStrings(found.coordenadasGMS);
+    setFormData((prev) => {
+      const current = [...(prev.barragens || [])];
+      if (!current[index]) return prev;
+      const row = current[index];
+      const nextRow: BarragemCoordenada = {
+        ...row,
+        id: found.id,
+        barragemId: found.id,
+        nome: mode === 'empty_only' && row.nome?.trim() ? row.nome : found.nomeBarragem || row.nome,
+        codigoSnisb:
+          mode === 'empty_only' && row.codigoSnisb?.trim()
+            ? row.codigoSnisb
+            : found.codigoSnisb || row.codigoSnisb,
+        municipio:
+          mode === 'empty_only' && row.municipio?.trim()
+            ? row.municipio
+            : found.municipio || row.municipio,
+        lat: mode === 'empty_only' && row.lat?.trim() ? row.lat : latStr || row.lat,
+        long: mode === 'empty_only' && row.long?.trim() ? row.long : longStr || row.long,
+      };
+      current[index] = nextRow;
+      return {
+        ...prev,
+        barragens: current,
+        barragemId: index === 0 ? found.id : prev.barragemId || found.id,
+        empreendedorId: prev.empreendedorId || found.empreendedorId,
+        nomeFantasia: index === 0 ? nextRow.nome || prev.nomeFantasia : prev.nomeFantasia,
+        lat: index === 0 ? nextRow.lat || prev.lat : prev.lat,
+        long: index === 0 ? nextRow.long || prev.long : prev.long,
+      };
+    });
+    toast.success(`Barragem "${found.nomeBarragem || found.id}" vinculada do Administra.`);
+  };
+
   const handleAssignAdministraBarragemToRow = (index: number, barragemId: string) => {
     if (!barragemId) {
       setFormData(prev => {
@@ -350,31 +429,26 @@ const NotificaForm: React.FC<NotificaFormProps> = ({ onBack, initialData, readOn
     const found = registraBarragens.find((b) => b.id === barragemId);
     if (!found) return;
 
+    const currentRow = (formData.barragens || [])[index];
+    if (!currentRow) return;
     const { lat: latStr, long: longStr } = coordenadasGmsToStrings(found.coordenadasGMS);
-    setFormData(prev => {
-      const current = [...(prev.barragens || [])];
-      if (!current[index]) return prev;
-      current[index] = {
-        ...current[index],
-        id: found.id,
-        barragemId: found.id,
-        nome: found.nomeBarragem || current[index].nome,
-        codigoSnisb: found.codigoSnisb || current[index].codigoSnisb,
-        municipio: found.municipio || current[index].municipio,
-        lat: latStr || current[index].lat,
-        long: longStr || current[index].long,
-      };
-      return {
-        ...prev,
-        barragens: current,
-        barragemId: index === 0 ? found.id : prev.barragemId || found.id,
-        empreendedorId: prev.empreendedorId || found.empreendedorId,
-        nomeFantasia: index === 0 ? (found.nomeBarragem || prev.nomeFantasia) : prev.nomeFantasia,
-        lat: index === 0 ? (latStr || prev.lat) : prev.lat,
-        long: index === 0 ? (longStr || prev.long) : prev.long,
-      };
-    });
-    toast.success(`Barragem "${found.nomeBarragem}" vinculada do Administra.`);
+    const proposals: FieldProposal<BarragemCoordenada>[] = [
+      { key: 'nome', label: `Nome (Barragem #${index + 1})`, incomingValue: found.nomeBarragem },
+      { key: 'codigoSnisb', label: `SNISB (Barragem #${index + 1})`, incomingValue: found.codigoSnisb },
+      { key: 'municipio', label: `Município (Barragem #${index + 1})`, incomingValue: found.municipio },
+      { key: 'lat', label: `Latitude (Barragem #${index + 1})`, incomingValue: latStr },
+      { key: 'long', label: `Longitude (Barragem #${index + 1})`, incomingValue: longStr },
+    ];
+    const conflicts = detectNonEmptyFieldConflicts(currentRow, proposals);
+    if (conflicts.length > 0) {
+      setPendingOverwrite({
+        entityLabel: `barragem "${found.nomeBarragem || found.id}"`,
+        conflicts,
+        onApply: (mode) => applyAssignedAdministraBarragemToRow(index, found, mode),
+      });
+      return;
+    }
+    applyAssignedAdministraBarragemToRow(index, found, 'overwrite_all');
   };
 
   const [confirmModal, setConfirmModal] = useState<{
@@ -796,6 +870,10 @@ const NotificaForm: React.FC<NotificaFormProps> = ({ onBack, initialData, readOn
   };
 
   const handleSave = async (status: 'Rascunho' | 'Concluído') => {
+    if (readOnly) {
+      toast.error('Este documento está bloqueado para edição direta.');
+      return;
+    }
     // Validation: Only mandatory for "Concluído"
     if (status === 'Concluído') {
       if (!formData.empreendedorNome || !formData.documentoIdentificacao || !formData.numProcesso) {
@@ -991,6 +1069,15 @@ const NotificaForm: React.FC<NotificaFormProps> = ({ onBack, initialData, readOn
           >
             <FileDown size={15} /> Salvar Docx
           </button>
+          {canRectify && (
+            <button
+              type="button"
+              onClick={() => setIsRetificarOpen(true)}
+              className="col-span-2 sm:col-span-1 flex items-center justify-center gap-1.5 px-3 py-2 bg-amber-600 text-white rounded-xl text-xs font-bold hover:bg-amber-700 transition-all shadow-sm whitespace-nowrap shrink-0 cursor-pointer"
+            >
+              <RefreshCw size={15} /> Retificar
+            </button>
+          )}
           {canEdit && (
             <button
               type="button"
@@ -1002,6 +1089,38 @@ const NotificaForm: React.FC<NotificaFormProps> = ({ onBack, initialData, readOn
           )}
         </div>
       </div>
+
+      {(readOnly || formData.retificadoDeId) && (
+        <div className="mb-5 space-y-2 text-xs">
+          {isConcludedStatus(formData.status) && (
+            <div className="p-3 rounded-xl border border-amber-200 bg-amber-50 text-amber-900 flex flex-wrap items-center justify-between gap-2">
+              <span>
+                Notificação concluída em modo somente leitura. Alterações exigem retificação auditável preservando o documento original.
+              </span>
+              {canRectify && (
+                <button
+                  type="button"
+                  onClick={() => setIsRetificarOpen(true)}
+                  className="px-3 py-1 rounded-lg bg-amber-600 hover:bg-amber-700 text-white font-bold text-[11px] cursor-pointer"
+                >
+                  Abrir retificação auditável
+                </button>
+              )}
+            </div>
+          )}
+          {!isConcludedStatus(formData.status) && readOnly && (
+            <div className="p-3 rounded-xl border border-slate-200 bg-slate-100 text-slate-700">
+              Visualização somente leitura: documento pertence a outro autor ou seu perfil não possui permissão de edição.
+            </div>
+          )}
+          {formData.retificadoDeId && (
+            <div className="p-3 rounded-xl border border-sky-200 bg-sky-50 text-sky-900">
+              Retificação v{formData.versaoRetificacao || 2} originada de <strong>{formData.retificadoDeId}</strong>
+              {formData.retificacaoJustificativa ? ` — Justificativa: ${formData.retificacaoJustificativa}` : ''}
+            </div>
+          )}
+        </div>
+      )}
 
       <div className="space-y-8">
         {/* Floating Navigation Menu */}
@@ -1058,6 +1177,7 @@ const NotificaForm: React.FC<NotificaFormProps> = ({ onBack, initialData, readOn
           selectedBarragemId={formData.barragemId}
           cpfCnpj={formData.documentoIdentificacao}
           nomeBarragem={formData.nomeFantasia || formData.barragens?.[0]?.nome}
+          processo={formData.numProcesso}
           barragemCount={formData.barragens?.length || 1}
           onSaveToAdministra={handleSaveOnlyToAdministra}
           savingToAdministra={savingAdministra}
@@ -1067,53 +1187,110 @@ const NotificaForm: React.FC<NotificaFormProps> = ({ onBack, initialData, readOn
           hasPendingBarragem={pendingBarragensIndices.length > 0}
           registeringEntity={registeringEntity}
           onSelectEmpreendedor={(emp: EmpreendedorCanonico) => {
-            setFormData(prev => ({
-              ...prev,
-              empreendedorId: emp.id,
-              empreendedorNome: emp.nome || prev.empreendedorNome,
-              tipoDocumentoIdentificacao: emp.tipoPessoa || prev.tipoDocumentoIdentificacao,
-              documentoIdentificacao: emp.cpfCnpj || prev.documentoIdentificacao,
-              telefone: emp.telefone || prev.telefone,
-              logradouro: emp.logradouro || prev.logradouro,
-              numero: emp.numero || prev.numero,
-              complemento: emp.complemento || prev.complemento,
-              bairro: emp.bairro || prev.bairro,
-              municipioCorrespondencia: emp.municipio
-                ? `${emp.municipio}/${emp.uf || 'MT'}`
-                : prev.municipioCorrespondencia,
-              ufCorrespondencia: emp.uf || prev.ufCorrespondencia,
-              cepCorrespondencia: emp.cep || prev.cepCorrespondencia,
-              carMt: emp.carMt || prev.carMt,
-            }));
+            const proposals: FieldProposal<NotificacaoData>[] = [
+              { key: 'empreendedorNome', label: 'Nome / Razão Social', incomingValue: emp.nome },
+              { key: 'tipoDocumentoIdentificacao', label: 'Tipo CPF/CNPJ', incomingValue: emp.tipoPessoa },
+              { key: 'documentoIdentificacao', label: 'CPF/CNPJ', incomingValue: emp.cpfCnpj },
+              { key: 'telefone', label: 'Telefone', incomingValue: emp.telefone },
+              { key: 'logradouro', label: 'Logradouro', incomingValue: emp.logradouro },
+              { key: 'numero', label: 'Número', incomingValue: emp.numero },
+              { key: 'complemento', label: 'Complemento', incomingValue: emp.complemento },
+              { key: 'bairro', label: 'Bairro', incomingValue: emp.bairro },
+              {
+                key: 'municipioCorrespondencia',
+                label: 'Município de correspondência',
+                incomingValue: emp.municipio ? `${emp.municipio}/${emp.uf || 'MT'}` : undefined,
+              },
+              { key: 'ufCorrespondencia', label: 'UF', incomingValue: emp.uf },
+              { key: 'cepCorrespondencia', label: 'CEP', incomingValue: emp.cep },
+              { key: 'carMt', label: 'CAR/MT', incomingValue: emp.carMt },
+            ];
+            const applySelection = (mode: 'empty_only' | 'overwrite_all') => {
+              setFormData((prev) => ({
+                ...applyFieldProposals(prev, proposals, mode),
+                empreendedorId: emp.id,
+              }));
+            };
+            const conflicts = detectNonEmptyFieldConflicts(formData, proposals);
+            if (conflicts.length > 0) {
+              setPendingOverwrite({
+                entityLabel: `empreendedor "${emp.nome}"`,
+                conflicts,
+                onApply: applySelection,
+              });
+              return;
+            }
+            applySelection('overwrite_all');
           }}
           onSelectBarragem={(bar: BarragemCanonica) => {
-            setFormData(prev => {
-              const { lat: latStr, long: longStr } = coordenadasGmsToStrings(bar.coordenadasGMS);
-              const nextBarragens = [...(prev.barragens || [])];
-              const targetIdx = activeBarragemIndex < nextBarragens.length ? activeBarragemIndex : 0;
-              if (nextBarragens.length > 0) {
-                nextBarragens[targetIdx] = {
-                  ...nextBarragens[targetIdx],
-                  id: bar.id,
-                  barragemId: bar.id,
-                  nome: bar.nomeBarragem || nextBarragens[targetIdx].nome,
-                  codigoSnisb: bar.codigoSnisb || nextBarragens[targetIdx].codigoSnisb,
-                  municipio: bar.municipio || nextBarragens[targetIdx].municipio,
-                  lat: latStr || nextBarragens[targetIdx].lat,
-                  long: longStr || nextBarragens[targetIdx].long,
+            const nextIdx =
+              activeBarragemIndex < (formData.barragens || []).length ? activeBarragemIndex : 0;
+            const { lat: latStr, long: longStr } = coordenadasGmsToStrings(bar.coordenadasGMS);
+            const activeRow = (formData.barragens || [])[nextIdx];
+            const rowConflicts = activeRow
+              ? detectNonEmptyFieldConflicts(activeRow, [
+                  { key: 'nome', label: `Nome da barragem #${nextIdx + 1}`, incomingValue: bar.nomeBarragem },
+                  { key: 'codigoSnisb', label: `SNISB #${nextIdx + 1}`, incomingValue: bar.codigoSnisb },
+                  { key: 'municipio', label: `Município #${nextIdx + 1}`, incomingValue: bar.municipio },
+                  { key: 'lat', label: `Latitude #${nextIdx + 1}`, incomingValue: latStr },
+                  { key: 'long', label: `Longitude #${nextIdx + 1}`, incomingValue: longStr },
+                ])
+              : [];
+            const applySelection = (mode: 'empty_only' | 'overwrite_all') => {
+              setFormData((prev) => {
+                const nextBarragens = [...(prev.barragens || [])];
+                const targetIdx =
+                  activeBarragemIndex < nextBarragens.length ? activeBarragemIndex : 0;
+                if (nextBarragens.length > 0) {
+                  const row = nextBarragens[targetIdx];
+                  nextBarragens[targetIdx] = {
+                    ...row,
+                    id: bar.id,
+                    barragemId: bar.id,
+                    nome:
+                      mode === 'empty_only' && row.nome?.trim()
+                        ? row.nome
+                        : bar.nomeBarragem || row.nome,
+                    codigoSnisb:
+                      mode === 'empty_only' && row.codigoSnisb?.trim()
+                        ? row.codigoSnisb
+                        : bar.codigoSnisb || row.codigoSnisb,
+                    municipio:
+                      mode === 'empty_only' && row.municipio?.trim()
+                        ? row.municipio
+                        : bar.municipio || row.municipio,
+                    lat: mode === 'empty_only' && row.lat?.trim() ? row.lat : latStr || row.lat,
+                    long: mode === 'empty_only' && row.long?.trim() ? row.long : longStr || row.long,
+                  };
+                }
+                const targetRow = nextBarragens[targetIdx];
+                return {
+                  ...prev,
+                  barragemId: targetIdx === 0 ? bar.id : prev.barragemId || bar.id,
+                  empreendedorId: bar.empreendedorId || prev.empreendedorId,
+                  nomeFantasia:
+                    targetIdx === 0
+                      ? targetRow?.nome || bar.nomeBarragem || prev.nomeFantasia
+                      : prev.nomeFantasia,
+                  municipioEmpreendimento:
+                    mode === 'empty_only' && prev.municipioEmpreendimento?.trim()
+                      ? prev.municipioEmpreendimento
+                      : bar.municipio || prev.municipioEmpreendimento,
+                  lat: targetIdx === 0 ? targetRow?.lat || prev.lat : prev.lat,
+                  long: targetIdx === 0 ? targetRow?.long || prev.long : prev.long,
+                  barragens: nextBarragens,
                 };
-              }
-              return {
-                ...prev,
-                barragemId: targetIdx === 0 ? bar.id : (prev.barragemId || bar.id),
-                empreendedorId: bar.empreendedorId || prev.empreendedorId,
-                nomeFantasia: targetIdx === 0 ? (bar.nomeBarragem || prev.nomeFantasia) : prev.nomeFantasia,
-                municipioEmpreendimento: bar.municipio || prev.municipioEmpreendimento,
-                lat: targetIdx === 0 ? (latStr || prev.lat) : prev.lat,
-                long: targetIdx === 0 ? (longStr || prev.long) : prev.long,
-                barragens: nextBarragens,
-              };
-            });
+              });
+            };
+            if (rowConflicts.length > 0) {
+              setPendingOverwrite({
+                entityLabel: `barragem "${bar.nomeBarragem || bar.id}"`,
+                conflicts: rowConflicts,
+                onApply: applySelection,
+              });
+              return;
+            }
+            applySelection('overwrite_all');
           }}
           onClearLinks={() => {
             setFormData(prev => ({
@@ -1551,27 +1728,55 @@ const NotificaForm: React.FC<NotificaFormProps> = ({ onBack, initialData, readOn
                                     )}
                                   </div>
 
-                                  {!readOnly && registraBarragens.length > 0 && (
-                                    <div className="mb-3" onClick={(e) => e.stopPropagation()}>
-                                      <select
-                                        value={barragem.barragemId || ''}
-                                        onChange={(e) => handleAssignAdministraBarragemToRow(index, e.target.value)}
-                                        className="w-full px-3 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-[11px] font-bold text-slate-700 focus:border-emerald-500 outline-none"
-                                      >
-                                        <option value="">-- Cadastrar como nova barragem no Administra ou selecionar existente --</option>
-                                        {(formData.empreendedorId
-                                          ? registraBarragens.filter((b) => !b.empreendedorId || b.empreendedorId === formData.empreendedorId)
-                                          : registraBarragens
-                                        )
-                                          .slice(0, 60)
-                                          .map((b) => (
-                                            <option key={b.id} value={b.id}>
-                                              {b.nomeBarragem} {b.codigoSnisb ? `[SNISB: ${b.codigoSnisb}]` : ''} — {b.municipio || 'MT'}
-                                            </option>
-                                          ))}
-                                      </select>
-                                    </div>
-                                  )}
+                                  {!readOnly && registraBarragens.length > 0 && (() => {
+                                    const rowQuery = rowBarragemSearch[index] || '';
+                                    const rowMatches = searchBarragens(registraBarragens, {
+                                      query: rowQuery,
+                                      empreendedorId: formData.empreendedorId,
+                                      includeUnlinked: true,
+                                    });
+                                    return (
+                                      <div className="mb-3 space-y-1.5" onClick={(e) => e.stopPropagation()}>
+                                        <div className="relative">
+                                          <Search size={12} className="absolute left-2.5 top-2 text-slate-400" />
+                                          <input
+                                            type="text"
+                                            value={rowQuery}
+                                            onChange={(e) =>
+                                              setRowBarragemSearch((prev) => ({
+                                                ...prev,
+                                                [index]: e.target.value,
+                                              }))
+                                            }
+                                            placeholder={`Filtrar dentre ${registraBarragens.length} barragens (nome, SNISB, município ou ID)...`}
+                                            className="w-full pl-7 pr-3 py-1 bg-white border border-slate-200 rounded-lg text-[11px] font-medium text-slate-700 focus:border-emerald-500 outline-none"
+                                          />
+                                        </div>
+                                        <select
+                                          value={barragem.barragemId || ''}
+                                          onChange={(e) => handleAssignAdministraBarragemToRow(index, e.target.value)}
+                                          className="w-full px-3 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-[11px] font-bold text-slate-700 focus:border-emerald-500 outline-none"
+                                        >
+                                          <option value="">
+                                            -- Selecionar barragem ({rowMatches.length} encontrada(s)) ou manter cadastro local --
+                                          </option>
+                                          {rowMatches.map((b) => {
+                                            const rel = describeBarragemRelationship(b, {
+                                              selectedEmpreendedorId: formData.empreendedorId,
+                                            });
+                                            return (
+                                              <option key={b.id} value={b.id}>
+                                                {b.nomeBarragem || b.empreendimento || b.id}{' '}
+                                                {b.codigoSnisb ? `[SNISB: ${b.codigoSnisb}]` : ''} —{' '}
+                                                {b.municipio || 'Sem município'} [{rel.label}
+                                                {!rel.hasCoordinates ? ' · coord. indisponíveis' : ''}]
+                                              </option>
+                                            );
+                                          })}
+                                        </select>
+                                      </div>
+                                    );
+                                  })()}
 
                                   <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                                     <div>
@@ -1726,6 +1931,17 @@ const NotificaForm: React.FC<NotificaFormProps> = ({ onBack, initialData, readOn
             nomeEmpreendimento={formData.nomeFantasia}
             carMt={formData.carMt}
             readOnly={readOnly}
+            onSelectBarragemIndex={(idx) => setActiveBarragemIndex(idx)}
+            relationshipSummary={(() => {
+              const activeBar = formData.barragens?.[activeBarragemIndex] || formData.barragens?.[0];
+              if (!activeBar?.barragemId) return 'sem vínculo no Administra';
+              const found = registraBarragens.find((b) => b.id === activeBar.barragemId);
+              const rel = describeBarragemRelationship(found || activeBar, {
+                selectedEmpreendedorId: formData.empreendedorId,
+                isAdministraRecord: Boolean(activeBar.barragemId),
+              });
+              return `${rel.label} · ${rel.coordinatesLabel}`;
+            })()}
             onSelectCoords={(latGMS, longGMS) => {
               setFormData(prev => {
                 const current = [...(prev.barragens || [])];
@@ -2214,6 +2430,21 @@ const NotificaForm: React.FC<NotificaFormProps> = ({ onBack, initialData, readOn
       <SolicitarVistoriaModal
         isOpen={isSolicitarVistoriaOpen}
         onClose={() => setIsSolicitarVistoriaOpen(false)}
+        multiTargets={
+          (formData.barragens || []).length > 0
+            ? (formData.barragens || []).map((b) => ({
+                tipoReferencia: 'notificacao' as const,
+                referenciaId: formData.id || '',
+                processo: formData.numProcesso || '',
+                barragemId: b.barragemId || formData.barragemId || '',
+                nomeBarragem: b.nome || formData.nomeFantasia || '',
+                municipio: b.municipio || formData.municipioEmpreendimento || '',
+                coordenadas: formatCoordenadasSimplesString(b.lat || formData.lat, b.long || formData.long),
+                empreendedorId: formData.empreendedorId || '',
+                empreendedorNome: formData.empreendedorNome || '',
+              }))
+            : null
+        }
         prefill={(() => {
           const activeBar = formData.barragens?.[activeBarragemIndex] || formData.barragens?.[0];
           return {
@@ -2231,6 +2462,33 @@ const NotificaForm: React.FC<NotificaFormProps> = ({ onBack, initialData, readOn
             empreendedorNome: formData.empreendedorNome || '',
           };
         })()}
+      />
+
+      <EntityOverwriteModal
+        isOpen={Boolean(pendingOverwrite)}
+        entityLabel={pendingOverwrite?.entityLabel || ''}
+        conflicts={pendingOverwrite?.conflicts || []}
+        onApplyEmptyOnly={() => {
+          pendingOverwrite?.onApply('empty_only');
+          setPendingOverwrite(null);
+        }}
+        onOverwriteAll={() => {
+          pendingOverwrite?.onApply('overwrite_all');
+          setPendingOverwrite(null);
+        }}
+        onCancel={() => setPendingOverwrite(null)}
+      />
+
+      <RetificarDocumentoModal
+        isOpen={isRetificarOpen}
+        doc={formData}
+        onCancel={() => setIsRetificarOpen(false)}
+        onConfirm={(justification) => {
+          const draft = createRetificationDraft(formData, justification, currentActor);
+          setFormData(draft);
+          setIsRetificarOpen(false);
+          toast.success('Rascunho de retificação criado. Edite os campos necessários e salve.');
+        }}
       />
     </div>
   );

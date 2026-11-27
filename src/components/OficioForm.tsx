@@ -28,6 +28,20 @@ import { getActiveAuthUser } from '../lib/supabase';
 import { useAuth } from '../contexts/AuthContext';
 import { SolicitarVistoriaModal } from './SolicitarVistoriaModal';
 import { formatCoordenadasGmsString } from '../types/solicitacoesVistoria';
+import {
+  canUserEditDraft,
+  canUserRectifyDocument,
+  createRetificationDraft,
+  isConcludedStatus,
+} from '../lib/documentPermissions';
+import {
+  applyFieldProposals,
+  detectNonEmptyFieldConflicts,
+  type ConflictItem,
+  type FieldProposal,
+} from '../lib/formSelectionMerge';
+import { EntityOverwriteModal } from './ui/EntityOverwriteModal';
+import { RetificarDocumentoModal } from './ui/RetificarDocumentoModal';
 
 const INITIAL_STATE: OficioData = {
   protocolo: '',
@@ -90,7 +104,7 @@ interface OficioFormProps {
   readOnly?: boolean;
 }
 
-const OficioForm: React.FC<OficioFormProps> = ({ onBack, initialData, readOnly }) => {
+const OficioForm: React.FC<OficioFormProps> = ({ onBack, initialData, readOnly: readOnlyProp }) => {
   const { refreshData, saveOficio, deleteOficio } = useContext(DataContext);
   const {
     empreendedores: administraEmps,
@@ -103,11 +117,17 @@ const OficioForm: React.FC<OficioFormProps> = ({ onBack, initialData, readOnly }
     syncEntitiesFromForm,
     refreshEcosystem,
   } = useContext(EcosystemContext);
-  const { canEdit } = useAuth();
+  const { user, profile, canEdit } = useAuth();
   const [loading, setLoading] = useState(false);
   const [savingToAdministra, setSavingToAdministra] = useState(false);
   const [registeringEntity, setRegisteringEntity] = useState<'empreendedor' | 'barragem' | 'rt' | null>(null);
   const [isSolicitarVistoriaOpen, setIsSolicitarVistoriaOpen] = useState(false);
+  const [isRetificarOpen, setIsRetificarOpen] = useState(false);
+  const [pendingOverwrite, setPendingOverwrite] = useState<{
+    entityLabel: string;
+    conflicts: ConflictItem[];
+    onApply: (mode: 'empty_only' | 'overwrite_all') => void;
+  } | null>(null);
   const [confirmModal, setConfirmModal] = useState<{ isOpen: boolean; action: 'clear' | 'delete' }>({
     isOpen: false,
     action: 'clear',
@@ -118,6 +138,20 @@ const OficioForm: React.FC<OficioFormProps> = ({ onBack, initialData, readOnly }
     }
     return INITIAL_STATE;
   });
+
+  const currentActor = useMemo(
+    () => ({
+      userId: user?.id,
+      perfilId: profile?.id,
+      name: profile?.nome,
+      email: user?.email,
+      canEdit,
+    }),
+    [user?.id, profile?.id, profile?.nome, user?.email, canEdit]
+  );
+
+  const readOnly = Boolean(readOnlyProp) || !canEdit || !canUserEditDraft(formData, currentActor);
+  const canRectify = canUserRectifyDocument(formData, canEdit);
 
   const [rtDetalhes, setRtDetalhes] = useState<{ cpf: string; formacaoProfissional: string; registroProfissional: string }>(() => ({
     cpf: '',
@@ -632,6 +666,10 @@ const OficioForm: React.FC<OficioFormProps> = ({ onBack, initialData, readOnly }
   };
 
   const handleSave = async (status: 'Rascunho' | 'Concluído') => {
+    if (readOnly) {
+      toast.error('Este documento está bloqueado para edição direta.');
+      return;
+    }
     if (!formData.interessado || !formData.protocolo || !formData.municipio) {
       toast.error('Por favor, preencha os campos obrigatórios (Empreendedor, Nº Ofício/Protocolo e Município).');
       return;
@@ -819,6 +857,15 @@ const OficioForm: React.FC<OficioFormProps> = ({ onBack, initialData, readOnly }
           <button onClick={handleDownloadDocx} className="flex-1 sm:flex-none justify-center px-3 sm:px-4 py-2 bg-blue-600 text-white rounded-xl font-bold text-xs hover:bg-blue-700 transition-all flex items-center gap-1.5 shadow-lg shadow-blue-600/20">
             <Download size={14} /> Exportar Docx
           </button>
+          {canRectify && (
+            <button
+              type="button"
+              onClick={() => setIsRetificarOpen(true)}
+              className="flex-1 sm:flex-none justify-center px-3 sm:px-4 py-2 bg-amber-600 text-white rounded-xl font-bold text-xs hover:bg-amber-700 transition-all flex items-center gap-1.5 shadow-sm whitespace-nowrap shrink-0 cursor-pointer"
+            >
+              <RotateCcw size={14} /> Retificar
+            </button>
+          )}
           {canEdit && (
             <button
               type="button"
@@ -830,6 +877,38 @@ const OficioForm: React.FC<OficioFormProps> = ({ onBack, initialData, readOnly }
           )}
         </div>
       </div>
+
+      {(readOnly || formData.retificadoDeId) && (
+        <div className="max-w-5xl mx-auto mt-4 px-3 sm:px-6 space-y-2 text-xs">
+          {isConcludedStatus(formData.status) && (
+            <div className="p-3 rounded-xl border border-amber-200 bg-amber-50 text-amber-900 flex flex-wrap items-center justify-between gap-2">
+              <span>
+                Ofício concluído em modo somente leitura. Alterações exigem retificação auditável preservando o documento original.
+              </span>
+              {canRectify && (
+                <button
+                  type="button"
+                  onClick={() => setIsRetificarOpen(true)}
+                  className="px-3 py-1 rounded-lg bg-amber-600 hover:bg-amber-700 text-white font-bold text-[11px] cursor-pointer"
+                >
+                  Abrir retificação auditável
+                </button>
+              )}
+            </div>
+          )}
+          {!isConcludedStatus(formData.status) && readOnly && (
+            <div className="p-3 rounded-xl border border-slate-200 bg-slate-100 text-slate-700">
+              Visualização somente leitura: documento pertence a outro autor ou seu perfil não possui permissão de edição.
+            </div>
+          )}
+          {formData.retificadoDeId && (
+            <div className="p-3 rounded-xl border border-sky-200 bg-sky-50 text-sky-900">
+              Retificação v{formData.versaoRetificacao || 2} originada de <strong>{formData.retificadoDeId}</strong>
+              {formData.retificacaoJustificativa ? ` — Justificativa: ${formData.retificacaoJustificativa}` : ''}
+            </div>
+          )}
+        </div>
+      )}
 
       <div className="max-w-5xl mx-auto mt-4 sm:mt-8 px-3 sm:px-6 grid grid-cols-1 lg:grid-cols-3 gap-6 sm:gap-8">
         <div className="lg:col-span-2 space-y-6 sm:space-y-8">
@@ -849,6 +928,7 @@ const OficioForm: React.FC<OficioFormProps> = ({ onBack, initialData, readOnly }
               selectedBarragemId={formData.barragemId}
               cpfCnpj={formData.cpfCnpj}
               nomeBarragem={formData.empreendimento}
+              processo={formData.processo || formData.protocolo}
               onSaveToAdministra={handleSaveOnlyToAdministra}
               savingToAdministra={savingToAdministra}
               onRegisterEmpreendedor={handleRegisterEmpreendedor}
@@ -860,29 +940,62 @@ const OficioForm: React.FC<OficioFormProps> = ({ onBack, initialData, readOnly }
               unregisteredRtNames={unregisteredRtNames}
               registeringEntity={registeringEntity}
               onSelectEmpreendedor={(emp: EmpreendedorCanonico) => {
-                setFormData(prev => ({
-                  ...prev,
-                  empreendedorId: emp.id,
-                  interessado: emp.nome || prev.interessado,
-                  cpfCnpj: emp.cpfCnpj || prev.cpfCnpj,
-                  logradouro: emp.logradouro || prev.logradouro,
-                  numero: emp.numero || prev.numero,
-                  complemento: emp.complemento || prev.complemento,
-                  bairro: emp.bairro || prev.bairro,
-                  municipio: emp.municipio || prev.municipio,
-                  cidadeUf: emp.municipio ? `${emp.municipio}/${emp.uf || 'MT'}` : prev.cidadeUf,
-                  cep: emp.cep || prev.cep,
-                }));
+                const matchedMun = matchMunicipioMT(emp.municipio);
+                const proposals: FieldProposal<OficioData>[] = [
+                  { key: 'interessado', label: 'Empreendedor / Interessado', incomingValue: emp.nome },
+                  { key: 'cpfCnpj', label: 'CPF/CNPJ', incomingValue: emp.cpfCnpj },
+                  { key: 'logradouro', label: 'Logradouro', incomingValue: emp.logradouro },
+                  { key: 'numero', label: 'Número', incomingValue: emp.numero },
+                  { key: 'complemento', label: 'Complemento', incomingValue: emp.complemento },
+                  { key: 'bairro', label: 'Bairro', incomingValue: emp.bairro },
+                  { key: 'municipio', label: 'Município', incomingValue: matchedMun || emp.municipio },
+                  {
+                    key: 'cidadeUf',
+                    label: 'Cidade/UF',
+                    incomingValue: emp.municipio ? `${emp.municipio}/${emp.uf || 'MT'}` : undefined,
+                  },
+                  { key: 'cep', label: 'CEP', incomingValue: emp.cep },
+                ];
+                const applySelection = (mode: 'empty_only' | 'overwrite_all') => {
+                  setFormData((prev) => ({
+                    ...applyFieldProposals(prev, proposals, mode),
+                    empreendedorId: emp.id,
+                  }));
+                };
+                const conflicts = detectNonEmptyFieldConflicts(formData, proposals);
+                if (conflicts.length > 0) {
+                  setPendingOverwrite({
+                    entityLabel: `empreendedor "${emp.nome}"`,
+                    conflicts,
+                    onApply: applySelection,
+                  });
+                  return;
+                }
+                applySelection('overwrite_all');
               }}
               onSelectBarragem={(bar: BarragemCanonica) => {
-                setFormData(prev => ({
-                  ...prev,
-                  barragemId: bar.id,
-                  empreendedorId: bar.empreendedorId || prev.empreendedorId,
-                  empreendimento: bar.nomeBarragem || prev.empreendimento,
-                  municipio: bar.municipio || prev.municipio,
-                  coordenadasGMS: bar.coordenadasGMS || prev.coordenadasGMS,
-                }));
+                const proposals: FieldProposal<OficioData>[] = [
+                  { key: 'empreendimento', label: 'Empreendimento / Barragem', incomingValue: bar.nomeBarragem },
+                  { key: 'municipio', label: 'Município', incomingValue: bar.municipio },
+                  { key: 'coordenadasGMS', label: 'Coordenadas GMS', incomingValue: bar.coordenadasGMS },
+                ];
+                const applySelection = (mode: 'empty_only' | 'overwrite_all') => {
+                  setFormData((prev) => ({
+                    ...applyFieldProposals(prev, proposals, mode),
+                    barragemId: bar.id,
+                    empreendedorId: bar.empreendedorId || prev.empreendedorId,
+                  }));
+                };
+                const conflicts = detectNonEmptyFieldConflicts(formData, proposals);
+                if (conflicts.length > 0) {
+                  setPendingOverwrite({
+                    entityLabel: `barragem "${bar.nomeBarragem || bar.id}"`,
+                    conflicts,
+                    onApply: applySelection,
+                  });
+                  return;
+                }
+                applySelection('overwrite_all');
               }}
               onSelectRT={(rt: ResponsavelTecnicoCanonico, selectedArt?: string) => {
                 setFormData(prev => {
@@ -1678,6 +1791,33 @@ const OficioForm: React.FC<OficioFormProps> = ({ onBack, initialData, readOnly }
           coordenadas: formatCoordenadasGmsString(formData.coordenadasGMS),
           empreendedorId: formData.empreendedorId || '',
           empreendedorNome: formData.interessado || '',
+        }}
+      />
+
+      <EntityOverwriteModal
+        isOpen={Boolean(pendingOverwrite)}
+        entityLabel={pendingOverwrite?.entityLabel || ''}
+        conflicts={pendingOverwrite?.conflicts || []}
+        onApplyEmptyOnly={() => {
+          pendingOverwrite?.onApply('empty_only');
+          setPendingOverwrite(null);
+        }}
+        onOverwriteAll={() => {
+          pendingOverwrite?.onApply('overwrite_all');
+          setPendingOverwrite(null);
+        }}
+        onCancel={() => setPendingOverwrite(null)}
+      />
+
+      <RetificarDocumentoModal
+        isOpen={isRetificarOpen}
+        doc={formData}
+        onCancel={() => setIsRetificarOpen(false)}
+        onConfirm={(justification) => {
+          const draft = createRetificationDraft(formData, justification, currentActor);
+          setFormData(draft);
+          setIsRetificarOpen(false);
+          toast.success('Rascunho de retificação criado. Edite os campos necessários e salve.');
         }}
       />
     </div>

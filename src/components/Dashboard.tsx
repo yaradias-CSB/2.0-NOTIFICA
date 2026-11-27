@@ -21,6 +21,16 @@ import { ProductivityCharts } from './dashboard/ProductivityCharts';
 import { DocumentList } from './dashboard/DocumentList';
 import { MTMap } from './dashboard/MTMap';
 import { useAuth } from '../contexts/AuthContext';
+import { toast } from 'sonner';
+import ConfirmModal from './ui/ConfirmModal';
+import { RetificarDocumentoModal } from './ui/RetificarDocumentoModal';
+import {
+  canUserDeleteDraft,
+  canUserEditDraft,
+  canUserRectifyDocument,
+  createRetificationDraft,
+  isConcludedStatus,
+} from '../lib/documentPermissions';
 
 interface DashboardProps {
   onNewParecer: () => void;
@@ -58,8 +68,19 @@ const Dashboard: React.FC<DashboardProps> = ({
   onViewNotificacao
 }) => {
   const { pareceres, oficios, notificacoes, documents, loading, deleteParecer, deleteOficio, deleteNotificacao } = useContext(DataContext);
-  const { canEdit, canDelete } = useAuth();
-  
+  const { user, profile, canEdit, canDelete } = useAuth();
+
+  const currentActor = useMemo(
+    () => ({
+      userId: user?.id,
+      perfilId: profile?.id,
+      name: profile?.nome,
+      email: user?.email,
+      canEdit,
+    }),
+    [user?.id, profile?.id, profile?.nome, user?.email, canEdit]
+  );
+
   const [filters, setFilters] = useState({
     municipios: [] as string[],
     dpa: [] as string[],
@@ -76,58 +97,80 @@ const Dashboard: React.FC<DashboardProps> = ({
   const [selectedAnalyst, setSelectedAnalyst] = useState<string | null>(null);
   const [showFilters, setShowFilters] = useState(false);
   const [optimizeMap, setOptimizeMap] = useState(false);
+  const [rectifyTarget, setRectifyTarget] = useState<AppDocument | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<{ id: string; item: AppDocument; docName: string } | null>(null);
 
-  const handleEdit = React.useCallback((item: AppDocument) => {
+  const openDocument = React.useCallback((item: AppDocument, viewOnly: boolean) => {
     if (item.tipo_documento?.startsWith('Parecer Técnico')) {
       const p = item as ParecerData;
-      if (!canEdit) {
-        onViewParecer?.(p);
-        return;
-      }
-      if (p.status === 'Concluído') {
-        if (window.confirm('Este parecer já está concluído. Deseja realmente alterá-lo?')) {
-          onEditParecer?.(p);
-        }
-      } else {
-        onEditParecer?.(p);
-      }
-    } else if (item.tipo_documento === 'Ofício de Pendências' || item.tipo_documento === '1° Oficio de Pendencias' || item.tipo_documento === '2° Oficio de Pendencias' || item.tipo_documento === 'Oficio Geral') {
-      if (!canEdit) {
-        onViewOficio?.(item as OficioData);
-        return;
-      }
-      onEditOficio?.(item as OficioData);
+      if (viewOnly) onViewParecer?.(p);
+      else onEditParecer?.(p);
+    } else if (
+      item.tipo_documento === 'Ofício de Pendências' ||
+      item.tipo_documento === '1° Oficio de Pendencias' ||
+      item.tipo_documento === '2° Oficio de Pendencias' ||
+      item.tipo_documento === 'Oficio Geral'
+    ) {
+      if (viewOnly) onViewOficio?.(item as OficioData);
+      else onEditOficio?.(item as OficioData);
     } else if (item.tipo_documento === 'Notificação') {
       const n = item as NotificacaoData;
-      if (!canEdit) {
-        onViewNotificacao?.(n);
-        return;
-      }
-      if (onEditNotificacao) {
-        onEditNotificacao(n);
-      } else {
-        onViewNotificacao?.(n);
-      }
+      if (viewOnly || !onEditNotificacao) onViewNotificacao?.(n);
+      else onEditNotificacao(n);
     }
-  }, [canEdit, onEditParecer, onViewParecer, onEditOficio, onViewOficio, onEditNotificacao, onViewNotificacao]);
+  }, [onEditParecer, onViewParecer, onEditOficio, onViewOficio, onEditNotificacao, onViewNotificacao]);
 
-  const handleDelete = React.useCallback(async (id: string, item: AppDocument) => {
-    if (!canDelete) return;
-    const docName = item.tipo_documento?.startsWith('Parecer Técnico') ? 'parecer' : 
-                    (item.tipo_documento === 'Ofício de Pendências' || item.tipo_documento === '1° Oficio de Pendencias' || item.tipo_documento === '2° Oficio de Pendencias' || item.tipo_documento === 'Oficio Geral') ? 'ofício' : 'notificação';
-    if (window.confirm(`Tem certeza que deseja excluir este ${docName}?`)) {
-      const result = item.tipo_documento?.startsWith('Parecer Técnico') 
-        ? await deleteParecer(id)
-        : (item.tipo_documento === 'Ofício de Pendências' || item.tipo_documento === '1° Oficio de Pendencias' || item.tipo_documento === '2° Oficio de Pendencias' || item.tipo_documento === 'Oficio Geral')
-          ? await deleteOficio(id)
-          : await deleteNotificacao(id);
-      if (result.success) {
-        alert(`${docName.charAt(0).toUpperCase() + docName.slice(1)} excluído com sucesso!`);
-      } else {
-        alert(`Erro ao excluir: ${result.message}`);
-      }
+  const handleEdit = React.useCallback((item: AppDocument) => {
+    if (canUserEditDraft(item, currentActor)) {
+      openDocument(item, false);
+      return;
     }
-  }, [canDelete, deleteParecer, deleteOficio, deleteNotificacao]);
+    if (isConcludedStatus(item.status) && canUserRectifyDocument(item, canEdit)) {
+      setRectifyTarget(item);
+      return;
+    }
+    toast.info('Documento bloqueado para edição: abrindo em modo somente leitura.');
+    openDocument(item, true);
+  }, [canEdit, currentActor, openDocument]);
+
+  const handleDelete = React.useCallback((id: string, item: AppDocument) => {
+    if (!canUserDeleteDraft(item, currentActor)) {
+      toast.warning(
+        isConcludedStatus(item.status)
+          ? 'Documentos concluídos não podem ser excluídos.'
+          : 'Somente o autor pode excluir seu próprio rascunho.'
+      );
+      return;
+    }
+    const docName = item.tipo_documento?.startsWith('Parecer Técnico')
+      ? 'parecer'
+      : (item.tipo_documento === 'Ofício de Pendências' ||
+         item.tipo_documento === '1° Oficio de Pendencias' ||
+         item.tipo_documento === '2° Oficio de Pendencias' ||
+         item.tipo_documento === 'Oficio Geral')
+        ? 'ofício'
+        : 'notificação';
+    setDeleteTarget({ id, item, docName });
+  }, [currentActor]);
+
+  const confirmDelete = React.useCallback(async () => {
+    if (!deleteTarget) return;
+    const { id, item, docName } = deleteTarget;
+    setDeleteTarget(null);
+    const result = item.tipo_documento?.startsWith('Parecer Técnico')
+      ? await deleteParecer(id)
+      : (item.tipo_documento === 'Ofício de Pendências' ||
+         item.tipo_documento === '1° Oficio de Pendencias' ||
+         item.tipo_documento === '2° Oficio de Pendencias' ||
+         item.tipo_documento === 'Oficio Geral')
+        ? await deleteOficio(id)
+        : await deleteNotificacao(id);
+    if (result.success) {
+      toast.success(`${docName.charAt(0).toUpperCase() + docName.slice(1)} excluído com sucesso!`);
+    } else {
+      toast.error(result.message || `Erro ao excluir ${docName}.`);
+    }
+  }, [deleteTarget, deleteParecer, deleteOficio, deleteNotificacao]);
 
   const availableMonths = useMemo(() => {
     const months = new Set<string>();
@@ -552,7 +595,30 @@ const Dashboard: React.FC<DashboardProps> = ({
         handleEdit={handleEdit}
         handleDelete={handleDelete}
         canEdit={canEdit}
-        canDelete={canDelete}
+        canDelete={canEdit || canDelete}
+      />
+
+      <RetificarDocumentoModal
+        isOpen={Boolean(rectifyTarget)}
+        doc={rectifyTarget}
+        onCancel={() => setRectifyTarget(null)}
+        onConfirm={(justification) => {
+          if (!rectifyTarget) return;
+          const draft = createRetificationDraft(rectifyTarget, justification, currentActor);
+          setRectifyTarget(null);
+          toast.success('Rascunho de retificação criado. Edite e salve para registrar.');
+          openDocument(draft as AppDocument, false);
+        }}
+      />
+
+      <ConfirmModal
+        isOpen={Boolean(deleteTarget)}
+        title="Excluir rascunho"
+        message={`Tem certeza que deseja excluir este ${deleteTarget?.docName || 'documento'}?`}
+        variant="danger"
+        confirmLabel="Excluir"
+        onConfirm={() => void confirmDelete()}
+        onCancel={() => setDeleteTarget(null)}
       />
     </div>
   );

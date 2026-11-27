@@ -41,7 +41,8 @@ import {
   ChevronDown,
   Globe,
   LogOut,
-  KeyRound
+  KeyRound,
+  Briefcase
 } from 'lucide-react';
 
 import Dashboard from './components/Dashboard';
@@ -53,7 +54,9 @@ import ControleNotificacoes from './views/ControleNotificacoes';
 import { EcossistemaAdministra } from './views/EcossistemaAdministra';
 import { PendenciasView } from './views/PendenciasView';
 import { SolicitacoesVistoriaView } from './views/SolicitacoesVistoriaView';
+import { MesaVirtualView } from './views/MesaVirtualView';
 import GlobalSearchBar from './components/GlobalSearchBar';
+import { canUserEditDraft } from './lib/documentPermissions';
 import { DataContext } from './contexts/DataContext';
 import { EcosystemContext } from './contexts/EcosystemContext';
 import { useNotifications } from './contexts/NotificationContext';
@@ -81,7 +84,7 @@ const App: React.FC = () => {
   const [isSidebarManualCollapsed, setIsSidebarManualCollapsed] = useState(false);
   const [showBackToTop, setShowBackToTop] = useState(false);
   const [isChangePasswordOpen, setIsChangePasswordOpen] = useState(false);
-  const [returnView, setReturnView] = useState<'dashboard' | 'list' | 'controle_notificacoes'>('dashboard');
+  const [returnView, setReturnView] = useState<'dashboard' | 'list' | 'controle_notificacoes' | 'mesa_virtual'>('dashboard');
 
   useEffect(() => {
     const handleScroll = () => {
@@ -151,6 +154,14 @@ const App: React.FC = () => {
 
   const isSidebarCollapsed = (effectiveView === 'form' || effectiveView === 'oficio' || effectiveView === 'notificacao') || isSidebarManualCollapsed;
   
+  const currentActor = {
+    userId: user?.id,
+    perfilId: profile?.id,
+    name: profile?.nome,
+    email: user?.email,
+    canEdit,
+  };
+
   const handleNavigate = (view: ExtendedViewId, doc: AppDocument | null = null, viewOnly: boolean = false) => {
     if ((view === 'users' || view === 'audit') && (!hasSession || !isAdmin)) {
       setCurrentView('dashboard');
@@ -164,18 +175,26 @@ const App: React.FC = () => {
       setIsQuickCreateOpen(false);
       return;
     }
+    const docReadOnly = doc ? !canUserEditDraft(doc, currentActor) : false;
     setEditingDocument(doc);
-    setIsViewOnly(viewOnly || !canEdit);
+    setIsViewOnly(viewOnly || !canEdit || docReadOnly);
     setCurrentView(view);
     setIsMobileMenuOpen(false);
     setIsQuickCreateOpen(false);
   };
 
   const handleOpenDocumentFromSearch = (doc: AppDocument, viewOnly: boolean = false) => {
-    const effectiveViewOnly = viewOnly || !canEdit;
+    const docReadOnly = !canUserEditDraft(doc, currentActor);
+    const effectiveViewOnly = viewOnly || !canEdit || docReadOnly;
     const tipo = (doc as any).tipo_documento;
     if (tipo === 'Notificação') {
-      setReturnView(currentView === 'controle_notificacoes' ? 'controle_notificacoes' : 'list');
+      setReturnView(
+        currentView === 'controle_notificacoes'
+          ? 'controle_notificacoes'
+          : currentView === 'mesa_virtual'
+          ? 'mesa_virtual'
+          : 'list'
+      );
       handleNavigate('notificacao', doc, effectiveViewOnly);
     } else if (tipo?.includes('Ofício') || tipo?.includes('Oficio')) {
       handleNavigate('oficio', doc as any, effectiveViewOnly);
@@ -311,6 +330,14 @@ const App: React.FC = () => {
               >
                 <LayoutDashboard size={20} className={`shrink-0 transition-transform group-hover:scale-110 ${currentView === 'dashboard' ? 'text-white' : 'text-slate-500 group-hover:text-emerald-400'}`} />
                 <span className="font-bold text-sm whitespace-nowrap tracking-tight">Painel de Controle</span>
+              </button>
+
+              <button 
+                onClick={() => handleNavigate('mesa_virtual')}
+                className={`flex items-center gap-3 w-full px-4 py-2 rounded-xl transition-all duration-200 group ${currentView === 'mesa_virtual' ? 'bg-emerald-500 text-white shadow-lg shadow-emerald-500/20' : 'text-slate-400 hover:bg-slate-800/50 hover:text-white'}`}
+              >
+                <Briefcase size={20} className={`shrink-0 transition-transform group-hover:scale-110 ${currentView === 'mesa_virtual' ? 'text-white' : 'text-slate-500 group-hover:text-emerald-400'}`} />
+                <span className="font-bold text-sm whitespace-nowrap tracking-tight">Mesa Virtual</span>
               </button>
               
               <button 
@@ -470,6 +497,13 @@ const App: React.FC = () => {
                 <LayoutDashboard size={24} />
               </button>
               <button 
+                onClick={() => handleNavigate('mesa_virtual')}
+                className={`p-3 rounded-xl transition-all ${currentView === 'mesa_virtual' ? 'bg-emerald-500 text-white shadow-lg shadow-emerald-500/20' : 'text-slate-500 hover:bg-slate-800 hover:text-white'}`}
+                title="Mesa Virtual"
+              >
+                <Briefcase size={24} />
+              </button>
+              <button 
                 onClick={() => handleNavigate('list')}
                 className={`p-3 rounded-xl transition-all ${currentView === 'list' ? 'bg-emerald-500 text-white shadow-lg shadow-emerald-500/20' : 'text-slate-500 hover:bg-slate-800 hover:text-white'}`}
                 title="Banco de Dados"
@@ -591,6 +625,7 @@ const App: React.FC = () => {
             <div className="flex items-center gap-2.5">
               <div className="w-8 h-8 rounded-xl bg-emerald-500/10 text-emerald-600 flex items-center justify-center font-bold shadow-2xs">
                 {effectiveView === 'dashboard' && <LayoutDashboard size={17} />}
+                {effectiveView === 'mesa_virtual' && <Briefcase size={17} />}
                 {effectiveView === 'list' && <Database size={17} />}
                 {effectiveView === 'controle_notificacoes' && <Bell size={17} />}
                 {effectiveView === 'form' && <ClipboardCheck size={17} />}
@@ -609,6 +644,7 @@ const App: React.FC = () => {
                 </span>
                 <span className="text-sm font-black text-slate-900 tracking-tight leading-tight">
                   {effectiveView === 'dashboard' && 'Painel de Controle'}
+                  {effectiveView === 'mesa_virtual' && 'Mesa Virtual CSB'}
                   {effectiveView === 'list' && 'Banco de Dados'}
                   {effectiveView === 'controle_notificacoes' && 'Controle de Notificações'}
                   {effectiveView === 'form' && (isViewOnly ? 'Visualizar Parecer Técnico' : 'Parecer Técnico')}
@@ -805,6 +841,11 @@ const App: React.FC = () => {
             />
           ) : effectiveView === 'audit' && showAuditMenu ? (
             <AuditLogs />
+          ) : effectiveView === 'mesa_virtual' ? (
+            <MesaVirtualView
+              onOpenDocument={(doc, viewOnly) => handleOpenDocumentFromSearch(doc, viewOnly)}
+              onCreateDocument={(target) => handleNavigate(target)}
+            />
           ) : effectiveView === 'ecossistema' ? (
             <EcossistemaAdministra />
           ) : effectiveView === 'pendencias' ? (

@@ -6,6 +6,7 @@ import {
   CheckCircle2, AlertCircle, Info, Crosshair, Loader2
 } from 'lucide-react';
 import { parseGMS, parseCoordinate, toGMS } from '../lib/coordinates';
+import { escapeHtml } from '../lib/documentPermissions';
 import { DataContext } from '../contexts/DataContext';
 import { NotificacaoAntigaData, BarragemSNISB, BarragemCoordenada } from '../types';
 
@@ -19,6 +20,8 @@ interface NotificacaoMiniMapProps {
   carMt?: string;
   readOnly?: boolean;
   onSelectCoords?: (latGMS: string, longGMS: string) => void;
+  onSelectBarragemIndex?: (index: number) => void;
+  relationshipSummary?: string;
 }
 
 // URLs for external datasets (same as in Controle de Notificações)
@@ -158,7 +161,9 @@ export const NotificacaoMiniMap: React.FC<NotificacaoMiniMapProps> = ({
   nomeEmpreendimento,
   carMt,
   readOnly = false,
-  onSelectCoords
+  onSelectCoords,
+  onSelectBarragemIndex,
+  relationshipSummary,
 }) => {
   const { notificacoes: novasNotificacoes } = useContext(DataContext);
 
@@ -385,7 +390,7 @@ export const NotificacaoMiniMap: React.FC<NotificacaoMiniMapProps> = ({
         },
         onEachFeature: (feature, layer) => {
           if (feature.properties && feature.properties.name) {
-            layer.bindTooltip(feature.properties.name, {
+            layer.bindTooltip(escapeHtml(feature.properties.name), {
               sticky: true,
               className: 'municipio-tooltip',
               direction: 'top',
@@ -617,23 +622,23 @@ export const NotificacaoMiniMap: React.FC<NotificacaoMiniMapProps> = ({
           <div style="font-family: sans-serif; min-width: 210px; padding: 2px;">
             <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 3px;">
               <span style="font-size: 9px; font-weight: 800; color: #1d4ed8; text-transform: uppercase; background: #dbeafe; padding: 2px 6px; border-radius: 4px;">Notificação Sistema</span>
-              <span style="font-size: 9px; color: #64748b; font-weight: 700;">${n.situacao || 'Em aberto'}</span>
+              <span style="font-size: 9px; color: #64748b; font-weight: 700;">${escapeHtml(n.situacao || 'Em aberto')}</span>
             </div>
             <div style="font-size: 12px; font-weight: 800; color: #0f172a; line-height: 1.2; margin-top: 4px;">
-              ${n.nomeFantasia || n.empreendedorNome || 'Sem Identificação'}
+              ${escapeHtml(n.nomeFantasia || n.empreendedorNome || 'Sem Identificação')}
             </div>
             <div style="font-size: 11px; color: #475569; margin-top: 4px;">
-              <b>Município:</b> ${n.municipioEmpreendimento || '-'}
+              <b>Município:</b> ${escapeHtml(n.municipioEmpreendimento || '-')}
             </div>
-            ${n.carMt ? `<div style="font-size: 10px; color: #64748b; font-family: monospace; margin-top: 2px;">CAR: ${n.carMt}</div>` : ''}
-            ${n.notificacaoGerada ? `<div style="font-size: 10px; color: #1e293b; font-weight: 600; margin-top: 2px;">Notificação nº: ${n.notificacaoGerada}</div>` : ''}
+            ${n.carMt ? `<div style="font-size: 10px; color: #64748b; font-family: monospace; margin-top: 2px;">CAR: ${escapeHtml(n.carMt)}</div>` : ''}
+            ${n.notificacaoGerada ? `<div style="font-size: 10px; color: #1e293b; font-weight: 600; margin-top: 2px;">Notificação nº: ${escapeHtml(n.notificacaoGerada)}</div>` : ''}
             <div style="font-size: 9px; font-family: monospace; color: #64748b; margin-top: 6px; border-top: 1px solid #f1f5f9; padding-top: 4px;">
-              Lat: ${toGMS(latVal, true)} | Long: ${toGMS(lngVal, false)}
+              Lat: ${escapeHtml(toGMS(latVal, true))} | Long: ${escapeHtml(toGMS(lngVal, false))}
             </div>
           </div>
         `;
         circle.bindPopup(popupHtml, { maxWidth: 280 });
-        circle.bindTooltip(`Nova: ${n.nomeFantasia || n.empreendedorNome || 'Notificação'}`, {
+        circle.bindTooltip(`Nova: ${escapeHtml(n.nomeFantasia || n.empreendedorNome || 'Notificação')}`, {
           direction: 'top',
           offset: [0, -6]
         });
@@ -678,24 +683,24 @@ export const NotificacaoMiniMap: React.FC<NotificacaoMiniMapProps> = ({
           <div style="font-family: sans-serif; min-width: 210px; padding: 2px;">
             <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 3px;">
               <span style="font-size: 9px; font-weight: 800; color: #b45309; text-transform: uppercase; background: #fef3c7; padding: 2px 6px; border-radius: 4px;">Notificação Antiga</span>
-              <span style="font-size: 9px; font-weight: 700; color: ${item.atendida === 'SIM' ? '#16a34a' : '#dc2626'};">Atendida: ${item.atendida || 'NÃO'}</span>
+              <span style="font-size: 9px; font-weight: 700; color: ${item.atendida === 'SIM' ? '#16a34a' : '#dc2626'};">Atendida: ${escapeHtml(item.atendida || 'NÃO')}</span>
             </div>
             <div style="font-size: 12px; font-weight: 800; color: #0f172a; line-height: 1.2; margin-top: 4px;">
-              ${item.propriedade || item.empreendedor || 'Notificação Histórica'}
+              ${escapeHtml(item.propriedade || item.empreendedor || 'Notificação Histórica')}
             </div>
-            ${item.empreendedor ? `<div style="font-size: 11px; color: #475569; margin-top: 2px;"><b>Empreendedor:</b> ${item.empreendedor}</div>` : ''}
+            ${item.empreendedor ? `<div style="font-size: 11px; color: #475569; margin-top: 2px;"><b>Empreendedor:</b> ${escapeHtml(item.empreendedor)}</div>` : ''}
             <div style="font-size: 11px; color: #475569; margin-top: 2px;">
-              <b>Município:</b> ${item.municipio || '-'}
+              <b>Município:</b> ${escapeHtml(item.municipio || '-')}
             </div>
-            ${item.numNotificacao ? `<div style="font-size: 10px; color: #1e293b; font-weight: 600; margin-top: 2px;">Notificação nº: ${item.numNotificacao}</div>` : ''}
-            ${item.carMt ? `<div style="font-size: 10px; color: #64748b; font-family: monospace; margin-top: 2px;">CAR: ${item.carMt}</div>` : ''}
+            ${item.numNotificacao ? `<div style="font-size: 10px; color: #1e293b; font-weight: 600; margin-top: 2px;">Notificação nº: ${escapeHtml(item.numNotificacao)}</div>` : ''}
+            ${item.carMt ? `<div style="font-size: 10px; color: #64748b; font-family: monospace; margin-top: 2px;">CAR: ${escapeHtml(item.carMt)}</div>` : ''}
             <div style="font-size: 9px; font-family: monospace; color: #64748b; margin-top: 6px; border-top: 1px solid #f1f5f9; padding-top: 4px;">
-              Lat: ${toGMS(latVal, true)} | Long: ${toGMS(lngVal, false)}
+              Lat: ${escapeHtml(toGMS(latVal, true))} | Long: ${escapeHtml(toGMS(lngVal, false))}
             </div>
           </div>
         `;
         circle.bindPopup(popupHtml, { maxWidth: 280 });
-        circle.bindTooltip(`Antiga: ${item.numNotificacao || item.propriedade || 'Notificação'}`, {
+        circle.bindTooltip(`Antiga: ${escapeHtml(item.numNotificacao || item.propriedade || 'Notificação')}`, {
           direction: 'top',
           offset: [0, -6]
         });
@@ -739,26 +744,26 @@ export const NotificacaoMiniMap: React.FC<NotificacaoMiniMapProps> = ({
         const popupHtml = `
           <div style="font-family: sans-serif; min-width: 210px; padding: 2px;">
             <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 3px;">
-              <span style="font-size: 9px; font-weight: 800; color: #0369a1; text-transform: uppercase; background: #e0f2fe; padding: 2px 6px; border-radius: 4px;">SNISB</span>
-              <span style="font-size: 9px; font-mono; color: #64748b; font-weight: 700;">#${item.snisb || '-'}</span>
+              <span style="font-size: 9px; font-weight: 800; color: #0369a1; text-transform: uppercase; background: #e0f2fe; padding: 2px 6px; border-radius: 4px;">SNISB (Ref. externa)</span>
+              <span style="font-size: 9px; font-mono; color: #64748b; font-weight: 700;">#${escapeHtml(item.snisb || '-')}</span>
             </div>
             <div style="font-size: 12px; font-weight: 800; color: #0f172a; line-height: 1.2; margin-top: 4px;">
-              ${item.nome || 'Barragem SNISB'}
+              ${escapeHtml(item.nome || 'Barragem SNISB')}
             </div>
             <div style="font-size: 11px; color: #475569; margin-top: 4px;">
-              <b>Empreendedor:</b> ${item.empreendedor || '-'}
+              <b>Empreendedor:</b> ${escapeHtml(item.empreendedor || '-')}
             </div>
             <div style="font-size: 11px; color: #475569; margin-top: 2px;">
-              <b>Município:</b> ${item.municipio || '-'}
+              <b>Município:</b> ${escapeHtml(item.municipio || '-')}
             </div>
-            ${item.uso ? `<div style="font-size: 10px; color: #64748b; margin-top: 2px;"><b>Uso:</b> ${item.uso}</div>` : ''}
+            ${item.uso ? `<div style="font-size: 10px; color: #64748b; margin-top: 2px;"><b>Uso:</b> ${escapeHtml(item.uso)}</div>` : ''}
             <div style="font-size: 9px; font-family: monospace; color: #64748b; margin-top: 6px; border-top: 1px solid #f1f5f9; padding-top: 4px;">
-              Lat: ${toGMS(latVal, true)} | Long: ${toGMS(lngVal, false)}
+              Lat: ${escapeHtml(toGMS(latVal, true))} | Long: ${escapeHtml(toGMS(lngVal, false))}
             </div>
           </div>
         `;
         circle.bindPopup(popupHtml, { maxWidth: 280 });
-        circle.bindTooltip(`SNISB: ${item.nome}`, { direction: 'top', offset: [0, -5] });
+        circle.bindTooltip(`SNISB: ${escapeHtml(item.nome)}`, { direction: 'top', offset: [0, -5] });
 
         group.addLayer(circle);
       });
@@ -799,26 +804,26 @@ export const NotificacaoMiniMap: React.FC<NotificacaoMiniMapProps> = ({
         const popupHtml = `
           <div style="font-family: sans-serif; min-width: 210px; padding: 2px;">
             <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 3px;">
-              <span style="font-size: 9px; font-weight: 800; color: #047857; text-transform: uppercase; background: #d1fae5; padding: 2px 6px; border-radius: 4px;">ANEEL</span>
-              <span style="font-size: 9px; font-mono; color: #64748b; font-weight: 700;">#${item.snisb || '-'}</span>
+              <span style="font-size: 9px; font-weight: 800; color: #047857; text-transform: uppercase; background: #d1fae5; padding: 2px 6px; border-radius: 4px;">ANEEL (Ref. externa)</span>
+              <span style="font-size: 9px; font-mono; color: #64748b; font-weight: 700;">#${escapeHtml(item.snisb || '-')}</span>
             </div>
             <div style="font-size: 12px; font-weight: 800; color: #0f172a; line-height: 1.2; margin-top: 4px;">
-              ${item.nome || 'Barragem ANEEL'}
+              ${escapeHtml(item.nome || 'Barragem ANEEL')}
             </div>
             <div style="font-size: 11px; color: #475569; margin-top: 4px;">
-              <b>Empreendedor:</b> ${item.empreendedor || '-'}
+              <b>Empreendedor:</b> ${escapeHtml(item.empreendedor || '-')}
             </div>
             <div style="font-size: 11px; color: #475569; margin-top: 2px;">
-              <b>Município:</b> ${item.municipio || '-'}
+              <b>Município:</b> ${escapeHtml(item.municipio || '-')}
             </div>
-            ${item.uso ? `<div style="font-size: 10px; color: #64748b; margin-top: 2px;"><b>Uso:</b> ${item.uso}</div>` : ''}
+            ${item.uso ? `<div style="font-size: 10px; color: #64748b; margin-top: 2px;"><b>Uso:</b> ${escapeHtml(item.uso)}</div>` : ''}
             <div style="font-size: 9px; font-family: monospace; color: #64748b; margin-top: 6px; border-top: 1px solid #f1f5f9; padding-top: 4px;">
-              Lat: ${toGMS(latVal, true)} | Long: ${toGMS(lngVal, false)}
+              Lat: ${escapeHtml(toGMS(latVal, true))} | Long: ${escapeHtml(toGMS(lngVal, false))}
             </div>
           </div>
         `;
         circle.bindPopup(popupHtml, { maxWidth: 280 });
-        circle.bindTooltip(`ANEEL: ${item.nome}`, { direction: 'top', offset: [0, -5] });
+        circle.bindTooltip(`ANEEL: ${escapeHtml(item.nome)}`, { direction: 'top', offset: [0, -5] });
 
         group.addLayer(circle);
       });
@@ -900,19 +905,19 @@ export const NotificacaoMiniMap: React.FC<NotificacaoMiniMapProps> = ({
           })
         }).addTo(map);
 
-        // Tooltip with details
+        // Tooltip with escaped HTML details
         const tooltipHtml = `
           <div class="p-2 min-w-[200px] text-slate-800">
             <div class="font-bold text-xs text-emerald-800 uppercase flex items-center gap-1.5 mb-1">
               <span class="w-4 h-4 rounded-full ${isActive ? 'bg-amber-500' : 'bg-emerald-600'} text-white font-black flex items-center justify-center text-[10px]">${b.index}</span>
-              <span>${b.nome}</span>
+              <span>${escapeHtml(b.nome)}</span>
               ${isActive ? '<span class="ml-auto text-[9px] px-1.5 py-0.5 rounded bg-amber-100 text-amber-800 font-extrabold border border-amber-300">EM EDIÇÃO</span>' : ''}
             </div>
-            ${municipio ? `<div class="text-[10px] text-slate-600 font-semibold mb-0.5">Município: <span class="text-slate-800">${municipio}</span></div>` : ''}
-            ${carMt ? `<div class="text-[10px] text-slate-500 font-mono mb-0.5">CAR: ${carMt}</div>` : ''}
+            ${municipio ? `<div class="text-[10px] text-slate-600 font-semibold mb-0.5">Município: <span class="text-slate-800">${escapeHtml(municipio)}</span></div>` : ''}
+            ${carMt ? `<div class="text-[10px] text-slate-500 font-mono mb-0.5">CAR: ${escapeHtml(carMt)}</div>` : ''}
             <div class="border-t border-slate-100 pt-1 text-[9px] font-mono text-slate-500">
-              <div>Lat: ${b.latGMS}</div>
-              <div>Long: ${b.lngGMS}</div>
+              <div>Lat: ${escapeHtml(b.latGMS)}</div>
+              <div>Long: ${escapeHtml(b.lngGMS)}</div>
             </div>
           </div>
         `;
@@ -922,6 +927,10 @@ export const NotificacaoMiniMap: React.FC<NotificacaoMiniMapProps> = ({
           direction: 'top',
           className: 'custom-map-tooltip',
           offset: [0, -38]
+        });
+
+        marker.on('click', () => {
+          onSelectBarragemIndex?.(b.index - 1);
         });
 
         createdMarkers.push(marker);
@@ -941,7 +950,7 @@ export const NotificacaoMiniMap: React.FC<NotificacaoMiniMapProps> = ({
         });
       }
     }
-  }, [parsedBarragens, municipio, carMt, activeBarragemIndex]);
+  }, [parsedBarragens, municipio, carMt, activeBarragemIndex, onSelectBarragemIndex]);
 
   const handleResetToMT = () => {
     const map = leafletMapRef.current;
@@ -1235,20 +1244,29 @@ export const NotificacaoMiniMap: React.FC<NotificacaoMiniMapProps> = ({
         )}
       </div>
 
-      {/* Footer guidance note */}
-      <div className="p-3 bg-slate-50 border-t border-slate-200 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2 text-[11px] text-slate-500">
-        <div className="flex items-center gap-2">
-          <Info size={14} className="text-emerald-600 shrink-0" />
-          <span>
-            Passe o mouse sobre os limites para consultar o nome do município de MT.
-            {!readOnly && onSelectCoords && ' Você também pode clicar no mapa para capturar uma coordenada.'}
-          </span>
-        </div>
-        {parsedCoords && (
-          <div className="text-slate-600 font-mono text-[10px]">
-            Decimais: {parsedCoords.lat.toFixed(5)}, {parsedCoords.lng.toFixed(5)}
+      {/* Footer legend & guidance note */}
+      <div className="p-3 bg-slate-50 border-t border-slate-200 space-y-2 text-[11px] text-slate-600">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="flex items-center gap-2">
+            <Info size={14} className="text-emerald-600 shrink-0" />
+            <span>
+              Clique em um marcador numerado para selecionar a barragem correspondente ou no mapa para capturar coordenadas.
+            </span>
           </div>
-        )}
+          {parsedCoords ? (
+            <div className="text-slate-600 font-mono text-[10px] tabular-nums">
+              Decimais: {parsedCoords.lat.toFixed(5)}, {parsedCoords.lng.toFixed(5)}
+            </div>
+          ) : (
+            <span className="text-amber-700 font-semibold">Coordenadas indisponíveis no formulário ativo</span>
+          )}
+        </div>
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-1 pt-1.5 border-t border-slate-200/80 text-[10px] text-slate-500">
+          <span className="font-semibold text-slate-700">
+            Vínculo: {relationshipSummary || 'Consulte acima Administra — vínculo oficial / vínculo pendente de revisão / sem vínculo'}
+          </span>
+          <span>Referências externas (opcionais, iniciam desmarcadas): Novas · Antigas · SNISB · ANEEL</span>
+        </div>
       </div>
     </div>
   );

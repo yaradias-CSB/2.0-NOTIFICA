@@ -13,6 +13,11 @@ import { NotificacaoData, NotificacaoAntigaData, BarragemSNISB } from '../types'
 import { MTMap } from '../components/dashboard/MTMap';
 import { OPS_MUNICIPIOS } from '../constants';
 import { parseGMS, parseCoordinate } from '../lib/coordinates';
+import {
+  canUserDeleteDraft,
+  canUserEditDraft,
+  isConcludedStatus,
+} from '../lib/documentPermissions';
 
 const SPREADSHEET_URL = 'https://docs.google.com/spreadsheets/d/e/2PACX-1vRsNA_kn1hwAKLrBlErzLUV8yod3P_nRqHlzLHr6cWStOw8sEuodQTQLMycPfOQmA/pub?output=xlsx';
 const SNISB_CSV_URL = 'https://docs.google.com/spreadsheets/d/18VwJZSAAsKU_qoJzAtxK3OxsyPNvkUD_rpZaZ1bdMnA/export?format=csv&gid=0';
@@ -165,7 +170,17 @@ const ControleNotificacoes: React.FC<ControleNotificacoesProps> = ({
     deleteNotificacao,
     refreshData
   } = useContext(DataContext);
-  const { canEdit, canDelete } = useAuth();
+  const { user, profile, canEdit, canDelete } = useAuth();
+  const currentActor = useMemo(
+    () => ({
+      userId: user?.id,
+      perfilId: profile?.id,
+      name: profile?.nome,
+      email: user?.email,
+      canEdit,
+    }),
+    [user?.id, profile?.id, profile?.nome, user?.email, canEdit]
+  );
   const [antigasNotificacoes, setAntigasNotificacoes] = useState<NotificacaoAntigaData[]>([]);
   const [snisbData, setSnisbData] = useState<BarragemSNISB[]>([]);
   const [aneelData, setAneelData] = useState<BarragemSNISB[]>([]);
@@ -192,11 +207,11 @@ const ControleNotificacoes: React.FC<ControleNotificacoesProps> = ({
   const [isDeleting, setIsDeleting] = useState(false);
 
   const canUserEdit = (item: any): boolean => {
-    return canEdit && item.origem === 'Nova';
+    return item.origem === 'Nova' && canUserEditDraft(item.raw, currentActor);
   };
 
   const canUserDelete = (item: any): boolean => {
-    return canDelete && item.origem === 'Nova';
+    return item.origem === 'Nova' && canUserDeleteDraft(item.raw, currentActor);
   };
 
   const handleView = (item: any) => {
@@ -209,7 +224,11 @@ const ControleNotificacoes: React.FC<ControleNotificacoesProps> = ({
 
   const handleEdit = (item: any) => {
     if (!canUserEdit(item)) {
-      toast.warning('Você não tem permissão para editar esta notificação.');
+      toast.warning(
+        item.origem === 'Nova' && isConcludedStatus(item.raw?.status)
+          ? 'Notificação concluída: abra para visualizar e iniciar retificação auditável.'
+          : 'Você não tem permissão para editar esta notificação.'
+      );
       return;
     }
     if (item.origem === 'Nova' && item.raw && onEditNotificacao) {
@@ -221,7 +240,7 @@ const ControleNotificacoes: React.FC<ControleNotificacoesProps> = ({
 
   const handleDeleteClick = (item: any) => {
     if (!canUserDelete(item)) {
-      toast.warning('Apenas Administrador pode excluir esta notificação.');
+      toast.warning('Somente o autor pode excluir seu próprio rascunho.');
       return;
     }
     if (item.origem !== 'Nova' || !item.id) {

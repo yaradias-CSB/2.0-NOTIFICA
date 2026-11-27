@@ -248,6 +248,12 @@ export interface ParecerData {
   empreendedorId?: string;
   barragemId?: string;
   responsavelTecnicoIds?: string[];
+  retificadoDeId?: string;
+  retificacaoJustificativa?: string;
+  retificadoEm?: string;
+  retificadoPorId?: string;
+  retificadoPorNome?: string;
+  versaoRetificacao?: number;
   created_at?: string;
   updated_at?: string;
 }
@@ -288,6 +294,12 @@ export interface OficioData {
   empreendedorId?: string;
   barragemId?: string;
   responsavelTecnicoIds?: string[];
+  retificadoDeId?: string;
+  retificacaoJustificativa?: string;
+  retificadoEm?: string;
+  retificadoPorId?: string;
+  retificadoPorNome?: string;
+  versaoRetificacao?: number;
   created_at?: string;
   updated_at?: string;
 }
@@ -465,6 +477,12 @@ export interface AppDocument {
   empreendedorId?: string;
   barragemId?: string;
   responsavelTecnicoIds?: string[];
+  retificadoDeId?: string;
+  retificacaoJustificativa?: string;
+  retificadoEm?: string;
+  retificadoPorId?: string;
+  retificadoPorNome?: string;
+  versaoRetificacao?: number;
   created_at?: string;
   updated_at?: string;
   [key: string]: any;

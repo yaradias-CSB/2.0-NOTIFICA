@@ -8,6 +8,15 @@ import {
   fetchAdministraBarragens,
   isAdministraConfigured,
 } from "./server/administraClient";
+import {
+  normalizeLookupText,
+  paginateItems,
+  searchBarragens,
+} from "./src/lib/barragemSearch";
+import {
+  isConcludedStatus,
+  isDocumentAuthor,
+} from "./src/lib/documentPermissions";
 
 dotenv.config();
 
@@ -409,6 +418,12 @@ const CLIENT_IDENTITY_KEYS = new Set([
   "autorId",
   "owner_id",
   "ownerId",
+  "retificado_por_id",
+  "retificadoPorId",
+  "retificado_por_nome",
+  "retificadoPorNome",
+  "retificado_em",
+  "retificadoEm",
 ]);
 
 function stripClientIdentityFields(raw: Record<string, any>): Record<string, any> {
@@ -1154,7 +1169,7 @@ function dedupeBarragens<
 >(items: T[]): T[] {
   const map = new Map<string, T>();
   for (const item of items) {
-    if (!item.nomeBarragem && !item.codigoSnisb) continue;
+    if (!item.id && !item.nomeBarragem && !item.codigoSnisb) continue;
     const key =
       item.id && !isSyntheticGeneratedId(item.id)
         ? `${item.sourceSystem}::id::${item.id}`
@@ -1769,21 +1784,27 @@ app.get("/api/registry/bootstrap", async (req, res) => {
 app.get("/api/registry/search", async (req, res) => {
   const q = String(req.query.q || "").trim();
   const empreendedorId = String(req.query.empreendedorId || "").trim();
+  const includeUnlinked = String(req.query.includeUnlinked || "true").toLowerCase() !== "false";
+  const requestedPage = Number(req.query.page) || 1;
+  const requestedPageSize = Number(req.query.pageSize) || 100;
   const configured = isAdministraConfigured();
-  if (!configured || (!q && !empreendedorId)) {
+  if (!configured) {
     return res.json({
-      remoteEnabled: configured,
+      remoteEnabled: false,
       empreendedores: [],
       barragens: [],
       responsaveisTecnicos: [],
+      pagination: {
+        page: 1,
+        pageSize: requestedPageSize,
+        total: 0,
+        totalPages: 1,
+        hasMore: false,
+      },
     });
   }
 
-  const clean = q.replace(/[%(),]/g, "");
-  const normText = clean
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .toLowerCase();
+  const clean = q.replace(/[%(),]/g, "").trim();
 
   const bundle = await fetchAdministraBarragens();
   if (!bundle.ok) {
@@ -1798,42 +1819,38 @@ app.get("/api/registry/search", async (req, res) => {
       empreendedores: [],
       barragens: [],
       responsaveisTecnicos: [],
+      pagination: {
+        page: 1,
+        pageSize: requestedPageSize,
+        total: 0,
+        totalPages: 1,
+        hasMore: false,
+      },
     });
   }
 
-  const barragens = bundle.barragensRows
-    .map((row) => mapAdministraBarragemV2(row))
-    .filter((b) => {
-      if (empreendedorId && b.empreendedorId !== empreendedorId) return false;
-      if (!clean) return true;
-      const bName = b.nomeBarragem.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
-      const empdt = (b.empreendimento || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
-      const mun = (b.municipio || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
-      const snisb = (b.codigoSnisb || "").toLowerCase();
-      const processo = (b.processoReferencia || "").toLowerCase();
-      const car = (b.car || "").toLowerCase();
-      const cursoAgua = (b.cursoAguaBarrado || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
-      const empId = (b.empreendedorId || "").toLowerCase();
-      return (
-        bName.includes(normText) ||
-        empdt.includes(normText) ||
-        mun.includes(normText) ||
-        snisb.includes(normText) ||
-        processo.includes(normText) ||
-        car.includes(normText) ||
-        cursoAgua.includes(normText) ||
-        empId.includes(normText)
-      );
-    })
-    .slice(0, 100);
+  const mapped = bundle.barragensRows.map((row) => mapAdministraBarragemV2(row));
+  const matched = searchBarragens(mapped, {
+    query: clean,
+    empreendedorId: empreendedorId || undefined,
+    includeUnlinked,
+  });
 
+  const paged = paginateItems(matched, requestedPage, requestedPageSize);
   const includeFullDoc = canViewFullDocument(req);
 
   return res.json({
     remoteEnabled: true,
     empreendedores: [],
-    barragens: includeFullDoc ? barragens : barragens.map(maskBarragemItem),
+    barragens: includeFullDoc ? paged.items : paged.items.map(maskBarragemItem),
     responsaveisTecnicos: [],
+    pagination: {
+      page: paged.page,
+      pageSize: paged.pageSize,
+      total: paged.total,
+      totalPages: paged.totalPages,
+      hasMore: paged.hasMore,
+    },
   });
 });
 
@@ -2041,6 +2058,143 @@ async function upsertDocumentWithColumnFallback(
   return { ok: false, item: working };
 }
 
+app.get("/api/documents/related", async (req, res) => {
+  const barragemId = String(req.query.barragemId || "").trim();
+  const empreendedorId = String(req.query.empreendedorId || "").trim();
+  const processo = normalizeLookupText(String(req.query.processo || ""));
+  const codigoSnisb = normalizeLookupText(String(req.query.codigoSnisb || ""));
+  const nomeBarragem = normalizeLookupText(String(req.query.nomeBarragem || ""));
+  const excludeId = String(req.query.excludeId || "").trim();
+  const requestedPage = Number(req.query.page) || 1;
+  const requestedPageSize = Math.min(50, Math.max(1, Number(req.query.pageSize) || 5));
+
+  if (!barragemId && !empreendedorId && !processo && !codigoSnisb && !nomeBarragem) {
+    return res.json({
+      remoteEnabled: Boolean(getServiceConfig("NOTIFICA")),
+      items: [],
+      page: 1,
+      pageSize: requestedPageSize,
+      total: 0,
+      totalPages: 1,
+      hasMore: false,
+      hasConcludedClassificacao: false,
+    });
+  }
+
+  const relatedItems: Array<{
+    id: string;
+    systemId: "NOTIFICA" | "CLASSIFICA" | "FISCALIZA";
+    tipoDocumento: string;
+    numeroDocumento?: string;
+    processo?: string;
+    status?: string;
+    dataEmissao?: string;
+    empreendedorId?: string;
+    empreendedorNome?: string;
+    barragemId?: string;
+    barragemNome?: string;
+    codigoSnisb?: string;
+    municipio?: string;
+    analista?: string;
+    vinculoLabel: "Barragem" | "Empreendedor" | "Processo" | "SNISB";
+    readonly: boolean;
+  }> = [];
+
+  const matchesCriteria = (row: Record<string, any>) => {
+    const rBarId = String(row.barragem_id ?? row.barragemId ?? "").trim();
+    const rBarIds = String(row.barragem_ids ?? "").split(",").map((s) => s.trim()).filter(Boolean);
+    const rEmpId = String(row.empreendedor_id ?? row.empreendedorId ?? "").trim();
+    const rProc = normalizeLookupText(String(row.processo ?? row.num_processo ?? row.protocolo ?? ""));
+    const rSnisb = normalizeLookupText(String(row.codigo_snisb ?? row.snisb ?? ""));
+    const rBarNome = normalizeLookupText(String(row.barragem_nome ?? row.nome_barragem ?? row.empreendimento ?? ""));
+
+    if (barragemId && (rBarId === barragemId || rBarIds.includes(barragemId))) return "Barragem" as const;
+    if (codigoSnisb && rSnisb && rSnisb === codigoSnisb) return "SNISB" as const;
+    if (processo && rProc && rProc === processo) return "Processo" as const;
+    if (nomeBarragem && rBarNome && rBarNome === nomeBarragem) return "Barragem" as const;
+    if (empreendedorId && rEmpId && rEmpId === empreendedorId) return "Empreendedor" as const;
+    return null;
+  };
+
+  const systemsToQuery: Array<{
+    sysId: "NOTIFICA" | "CLASSIFICA" | "FISCALIZA";
+    tables: Array<{ table: string; defaultDocType: string }>;
+  }> = [
+    { sysId: "NOTIFICA", tables: SYSTEM_TABLE_CANDIDATES.NOTIFICA.products },
+    { sysId: "CLASSIFICA", tables: SYSTEM_TABLE_CANDIDATES.CLASSIFICA.products },
+    { sysId: "FISCALIZA", tables: SYSTEM_TABLE_CANDIDATES.FISCALIZA.products },
+  ];
+
+  let anyRemoteConfigured = false;
+  await Promise.all(
+    systemsToQuery.map(async ({ sysId, tables }) => {
+      const cfg = getServiceConfig(sysId);
+      if (!cfg) return;
+      anyRemoteConfigured = true;
+      await Promise.all(
+        tables.map(async ({ table, defaultDocType }) => {
+          const r = await remoteRestRequest<Record<string, any>[]>(cfg, table, {
+            query: "select=*&limit=500",
+          });
+          if (!r.ok || !Array.isArray(r.data)) return;
+          for (const row of r.data) {
+            const id = String(row.id ?? "").trim();
+            if (!id || (excludeId && id === excludeId)) continue;
+            const vinculoLabel = matchesCriteria(row);
+            if (!vinculoLabel) continue;
+            const derived = extractDerivedEntitiesFromProductRow(row, sysId, defaultDocType);
+            relatedItems.push({
+              id: derived.product.id,
+              systemId: sysId,
+              tipoDocumento: derived.product.tipoDocumento,
+              numeroDocumento: derived.product.numeroDocumento,
+              processo: derived.product.processo,
+              status: derived.product.status,
+              dataEmissao: derived.product.dataEmissao,
+              empreendedorId: derived.product.empreendedorId,
+              empreendedorNome: derived.product.empreendedorNome,
+              barragemId: derived.product.barragemId,
+              barragemNome: derived.product.barragemNome,
+              codigoSnisb: derived.product.codigoSnisb,
+              municipio: derived.product.municipio,
+              analista: derived.product.analista,
+              vinculoLabel,
+              readonly: derived.product.readonly,
+            });
+          }
+        })
+      );
+    })
+  );
+
+  relatedItems.sort((a, b) => {
+    const tA = new Date(a.dataEmissao || 0).getTime() || 0;
+    const tB = new Date(b.dataEmissao || 0).getTime() || 0;
+    return tB - tA;
+  });
+
+  const hasConcludedClassificacao = relatedItems.some((item) => {
+    const statusNorm = normalizeLookupText(item.status);
+    const tipoNorm = normalizeLookupText(item.tipoDocumento);
+    const isConcluded = statusNorm === "concluido" || statusNorm === "aprovado" || statusNorm === "vigente";
+    if (!isConcluded) return false;
+    return item.systemId === "CLASSIFICA" || tipoNorm.includes("classificacao");
+  });
+
+  const paged = paginateItems(relatedItems, requestedPage, requestedPageSize);
+
+  return res.json({
+    remoteEnabled: anyRemoteConfigured,
+    items: paged.items,
+    page: paged.page,
+    pageSize: paged.pageSize,
+    total: paged.total,
+    totalPages: paged.totalPages,
+    hasMore: paged.hasMore,
+    hasConcludedClassificacao,
+  });
+});
+
 app.get("/api/documents/:kind", async (req, res) => {
   const kind = req.params.kind;
   if (!ALLOWED_DOC_KINDS.has(kind)) {
@@ -2082,6 +2236,57 @@ app.post("/api/documents/:kind", requireRole(["Administrador", "Analista"]), asy
     });
   }
   const flatBody = sanitizeFlatRow(stripClientIdentityFields(req.body || {}));
+
+  if (flatBody.id) {
+    const existingRes = await remoteRestRequest<Array<Record<string, any>>>(cfg, kind, {
+      query: `select=id,user_id,analista,status,created_at&id=eq.${encodeURIComponent(String(flatBody.id))}&limit=1`,
+    });
+    if (existingRes.ok && Array.isArray(existingRes.data) && existingRes.data[0]) {
+      const existing = existingRes.data[0];
+      const actor = {
+        userId: authUser.id,
+        perfilId: authUser.perfilId,
+        name: authUser.nome,
+        email: authUser.email,
+        canEdit: true,
+      };
+      if (!isDocumentAuthor(existing, actor)) {
+        return res.status(403).json({
+          remoteEnabled: true,
+          synced: false,
+          code: "DOCUMENT_AUTHOR_FORBIDDEN",
+          error: "Você só pode editar documentos de sua própria autoria.",
+        });
+      }
+      if (isConcludedStatus(existing.status)) {
+        return res.status(409).json({
+          remoteEnabled: true,
+          synced: false,
+          code: "DOCUMENT_CONCLUDED_LOCKED",
+          error:
+            "Documentos concluídos não podem ser editados silenciosamente. Inicie uma retificação auditável a partir do documento.",
+        });
+      }
+    }
+  }
+
+  if (flatBody.retificado_de_id) {
+    const justification = String(flatBody.retificacao_justificativa || "").trim();
+    if (justification.length < 5) {
+      return res.status(400).json({
+        remoteEnabled: true,
+        synced: false,
+        code: "RETIFICATION_JUSTIFICATION_REQUIRED",
+        error: "Informe uma justificativa auditável (mínimo de 5 caracteres) para registrar uma retificação.",
+      });
+    }
+    flatBody.retificado_de_id = String(flatBody.retificado_de_id).trim();
+    flatBody.retificacao_justificativa = justification;
+    flatBody.retificado_por_id = authUser.id ? authUser.id : null;
+    flatBody.retificado_por_nome = getAuthorDisplayName(authUser);
+    flatBody.retificado_em = new Date().toISOString();
+  }
+
   flatBody.user_id = authUser.id ? authUser.id : null;
   flatBody.analista = getAuthorDisplayName(authUser);
 
@@ -2100,10 +2305,18 @@ app.post("/api/documents/:kind", requireRole(["Administrador", "Analista"]), asy
   });
 });
 
-app.delete("/api/documents/:kind/:id", requireRole(["Administrador"]), async (req, res) => {
+app.delete("/api/documents/:kind/:id", requireRole(["Administrador", "Analista"]), async (req, res) => {
   const { kind, id } = req.params;
   if (!ALLOWED_DOC_KINDS.has(kind) || !id) {
     return res.status(400).json({ remoteEnabled: false, deleted: false, error: "Parâmetros inválidos." });
+  }
+  const authUser = getSessionIdentity(req);
+  if (!authUser) {
+    return res.status(401).json({
+      remoteEnabled: false,
+      deleted: false,
+      error: "Usuário não autenticado.",
+    });
   }
   const cfg = getServiceConfig("NOTIFICA");
   if (!cfg) {
@@ -2113,6 +2326,44 @@ app.delete("/api/documents/:kind/:id", requireRole(["Administrador"]), async (re
       error: "Persistência remota do Notifica não configurada no servidor.",
     });
   }
+
+  const existingRes = await remoteRestRequest<Array<Record<string, any>>>(cfg, kind, {
+    query: `select=id,user_id,analista,status&id=eq.${encodeURIComponent(id)}&limit=1`,
+  });
+  if (existingRes.ok && Array.isArray(existingRes.data)) {
+    const existing = existingRes.data[0];
+    if (!existing) {
+      return res.status(404).json({
+        remoteEnabled: true,
+        deleted: false,
+        error: "Documento não encontrado.",
+      });
+    }
+    const actor = {
+      userId: authUser.id,
+      perfilId: authUser.perfilId,
+      name: authUser.nome,
+      email: authUser.email,
+      canEdit: true,
+    };
+    if (!isDocumentAuthor(existing, actor)) {
+      return res.status(403).json({
+        remoteEnabled: true,
+        deleted: false,
+        code: "DOCUMENT_AUTHOR_FORBIDDEN",
+        error: "Você só pode excluir rascunhos de sua própria autoria.",
+      });
+    }
+    if (isConcludedStatus(existing.status)) {
+      return res.status(409).json({
+        remoteEnabled: true,
+        deleted: false,
+        code: "DOCUMENT_CONCLUDED_LOCKED",
+        error: "Documentos concluídos não podem ser excluídos.",
+      });
+    }
+  }
+
   const result = await remoteRestRequest(cfg, kind, {
     method: "DELETE",
     query: `id=eq.${encodeURIComponent(id)}`,
